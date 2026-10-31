@@ -104,14 +104,18 @@ struct LocalLibraryView: View {
     @ViewBuilder private var cloudContent: some View {
         if !cloud.hasCheckedAccount {
             ProgressView("正在连接云端书架").frame(maxWidth: .infinity).padding(40)
-        } else if !cloud.isConnected {
+        } else if !cloud.isConnected && !cloud.shelf.hasSnapshot {
             ContentUnavailableView {
                 Label("让书架与你同步", systemImage: "cloud")
             } description: {
-                Text("登录菠萝包，在这里查看云端收藏。本机下载与导入的作品保留在“本机书籍”。")
+                Text(cloud.accountError ?? "登录菠萝包，在这里查看云端收藏。本机下载与导入的作品保留在“本机书籍”。")
             } actions: {
-                Button("登录菠萝包") { showingLogin = true }.buttonStyle(.glassProminent)
-                    .accessibilityIdentifier("cloud-library-login")
+                if cloud.hasSavedConnection && !cloud.appNeedsLogin && !cloud.webNeedsLogin {
+                    Button("重试连接") { Task { await cloud.refresh() } }.buttonStyle(.glassProminent)
+                } else {
+                    Button(cloud.appNeedsLogin ? "重新登录菠萝包" : "登录菠萝包") { showingServiceLogin = true }.buttonStyle(.glassProminent)
+                        .accessibilityIdentifier("cloud-library-login")
+                }
             }
         } else {
             VStack(alignment: .leading, spacing: 8) {
@@ -133,14 +137,19 @@ struct LocalLibraryView: View {
                         .font(.subheadline).lineLimit(1)
                 }
             }
+            if let accountError = cloud.accountError, !cloud.isConnected {
+                cloudMessage(title: "暂时无法确认账号", message: accountError, identifier: "shelf-account-error")
+            }
             if cloud.shelf.loading { ProgressView("正在同步书架").accessibilityIdentifier("shelf-loading") }
             if let error = cloud.shelf.error {
                 cloudMessage(title: "书架暂时无法同步", message: error, identifier: "shelf-error")
             } else if let notice = cloud.shelf.notice {
                 cloudMessage(title: "部分书架未能更新", message: notice, identifier: "shelf-partial")
             }
-            if cloud.webNeedsLogin {
-                Button("重新连接网页账号") { showingLogin = true }.buttonStyle(.glass)
+            if cloud.appNeedsLogin {
+                Button("重新登录菠萝包") { showingServiceLogin = true }.buttonStyle(.glass)
+            } else if !cloud.usesAppAccount && cloud.webNeedsLogin {
+                Button("重新授权网页阅读") { showingLogin = true }.buttonStyle(.glass)
             }
             if cloud.shelf.isConfirmedEmpty {
                 ContentUnavailableView("暂无可读取的文字小说", systemImage: "books.vertical", description: Text("在菠萝包收藏喜欢的文字作品后，下拉即可同步。"))

@@ -9,6 +9,14 @@ extension SFAPI {
     func vipContent(chapter: Chapter) async throws -> ChapterContent {
         guard hasWebSession() else { throw SFAPIError.server("请先使用官方网页登录，再读取已订阅章节。") }
         let generation = sessionGeneration()
+        if hasAppSession() {
+            let appAccount = try await accountServiceProfile()
+            let webAccount = try await webProfile()
+            guard appAccount.matchesAccountIdentity(webAccount) else {
+                throw SFAPIError.server("网页阅读授权与当前账号不同，请在“我的”中授权同一账号后阅读。")
+            }
+            guard sessionGeneration() == generation else { throw CancellationError() }
+        }
         var components = URLComponents(string: "https://book.sfacg.com/ajax/ashx/common.ashx")!
         components.queryItems = ["op": "getChapPic", "tp": "true", "quick": "true", "cid": String(chapter.id), "nid": String(chapter.bookID), "font": "18", "lang": "", "w": "728"].map { URLQueryItem(name: $0.key, value: $0.value) }
         var request = webRequest(url: components.url!, referer: chapter.officialURL)

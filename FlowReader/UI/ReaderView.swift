@@ -7,7 +7,6 @@ struct ReaderView: View {
     @Environment(LibraryStore.self) private var library
     @Environment(CloudLibraryStore.self) private var cloud
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -19,6 +18,13 @@ struct ReaderView: View {
     @State private var error: String?
     @State private var showContents = false
     @State private var showSettings = false
+    @State private var showBookmarks = false
+    @State private var bookmarks = ReaderBookmarkStore.shared
+    @State private var bookmarkError: String?
+    @State private var requestedPosition: ReaderTextPosition?
+    @State private var scrollJumpRevision = 0
+    @State private var isScrubbing = false
+    @State private var scrubProgress = 0.0
     @State private var showChrome = false
     @State private var readingPosition = ReaderTextPosition(paragraph: 0, utf16Offset: 0)
     @State private var pagination: ReaderPagination?
@@ -84,6 +90,10 @@ struct ReaderView: View {
             .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showSettings) { settings }
+        .sheet(isPresented: $showBookmarks) { bookmarkList }
+        .alert("书签暂未保存", isPresented: Binding(get: { bookmarkError != nil }, set: { if !$0 { bookmarkError = nil } })) {
+            Button("好", role: .cancel) { bookmarkError = nil }
+        } message: { Text(bookmarkError ?? "") }
         .onDisappear { syncRetryTask?.cancel(); saveProgress() }
         .onChange(of: scenePhase) { _, phase in if phase != .active { saveProgress() } }
         .onChange(of: readingPosition) { _, _ in if turnMode == "curl" { saveProgress() } }
@@ -93,31 +103,49 @@ struct ReaderView: View {
     }
 
     private var readingPage: some View {
-        ZStack {
-            background.ignoresSafeArea()
-            if loading {
-                ProgressView("正在打开章节…")
-            } else if let error {
-                ContentUnavailableView {
-                    Label("暂时无法打开", systemImage: "book.closed")
-                } description: { Text(error) } actions: {
-                    Button("重试") { loadRevision += 1 }.buttonStyle(.borderedProminent)
-                    if chapterIsRemote {
-                        Link("在官方页面查看", destination: selected.officialURL).buttonStyle(.glass)
-                    }
-                }
-            } else if content != nil {
-                if turnMode == "curl" { pagedContent }
-                else { scrollingContent }
-            }
-            if showChrome || loading || error != nil { readerChrome.transition(.opacity) }
+        GeometryReader { safeGeometry in
+            readerViewport(safeArea: safeGeometry.safeAreaInsets)
+                .ignoresSafeArea()
         }
         .foregroundStyle(foreground)
         .accessibilityAction(named: showChrome ? "隐藏阅读工具" : "显示阅读工具", toggleChrome)
         .accessibilityAction(.escape) { dismiss() }
     }
 
+    private func readerViewport(safeArea: EdgeInsets) -> some View {
+        GeometryReader { geometry in
+            let insets = UIEdgeInsets(top: safeArea.top, left: safeArea.leading, bottom: safeArea.bottom, right: safeArea.trailing)
+            let layout = ReaderViewportLayout(size: geometry.size, safeAreaInsets: insets, occlusions: readingOcclusions(in: geometry))
+            ZStack(alignment: .topLeading) {
+                background.ignoresSafeArea()
+                Group {
+                    if loading {
+                        ProgressView("正在打开章节…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else if let error {
+                        ContentUnavailableView {
+                            Label("暂时无法打开", systemImage: "book.closed")
+                        } description: { Text(error) } actions: {
+                            Button("重试") { loadRevision += 1 }.buttonStyle(.borderedProminent)
+                            if chapterIsRemote {
+                                Link("在官方页面查看", destination: selected.officialURL).buttonStyle(.glass)
+                            }
+                        }
+                    } else if content != nil {
+                        if turnMode == "curl" { pagedViewport(safeArea: safeArea) }
+                        else {
+                            scrollingContent
+                                .frame(width: layout.contentFrame.width, height: layout.contentFrame.height)
+                                .position(x: layout.contentFrame.midX, y: layout.contentFrame.midY)
+                        }
+                    }
+                }
+                if showChrome || loading || error != nil { readerChrome(layout: layout).transition(.opacity) }
+            }
+        }
+    }
+
     private var scrollingContent: some View {
+        ScrollViewReader { proxy in
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 VStack(alignment: .leading, spacing: 14) {
@@ -143,14 +171,13 @@ struct ReaderView: View {
                         .font(.footnote).foregroundStyle(foreground.opacity(0.5))
                 }.frame(maxWidth: .infinity).padding(.vertical, 38)
             }
-            .frame(maxWidth: 680)
-            .padding(.horizontal, sizeClass == .regular ? 36 : 26)
-            .frame(maxWidth: .infinity)
-            .padding(.bottom, 48)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.bottom, 32)
         }
         .id(selected.id)
         .accessibilityIdentifier("reader-content")
         .scrollIndicators(.hidden)
+        .contentMargins(0, for: .scrollContent)
         .scrollPosition(id: $visibleParagraph, anchor: .top)
         .onChange(of: visibleParagraph) { _, value in
             guard turnMode == "scroll", let value else { return }
@@ -160,12 +187,9 @@ struct ReaderView: View {
             saveProgress()
         }
         .onTapGesture(perform: toggleChrome)
-    }
-
-    private var pagedContent: some View {
-        GeometryReader { safeGeometry in
-            pagedViewport(safeArea: safeGeometry.safeAreaInsets)
-                .ignoresSafeArea()
+        .onChange(of: scrollJumpRevision) { _, _ in
+            proxy.scrollTo(readingPosition.paragraph, anchor: .top)
+        }
         }
     }
 
@@ -218,49 +242,125 @@ struct ReaderView: View {
         return []
     }
 
-    private var readerChrome: some View {
-        VStack {
-            HStack(alignment: .top, spacing: 12) {
-                Button { saveProgress(); dismiss() } label: { Image(systemName: "xmark").frame(width: 44, height: 44) }
-                    .buttonStyle(.glass).buttonBorderShape(.circle)
-                    .accessibilityLabel("关闭阅读").accessibilityIdentifier("reader-close")
-                Spacer(minLength: 0)
-                HStack(spacing: 4) {
-                    Button { showContents = true } label: { Image(systemName: "list.bullet").frame(width: 44, height: 44) }
-                        .accessibilityLabel("章节目录").accessibilityIdentifier("reader-contents")
-                    Button { showSettings = true } label: { Image(systemName: "textformat.size").frame(width: 44, height: 44) }
-                        .accessibilityLabel("阅读设置").accessibilityIdentifier("reader-settings")
-                    moreMenu.frame(width: 44, height: 44)
-                }.buttonStyle(.plain).padding(4).glassEffect(.regular, in: .capsule)
+    private func readerChrome(layout: ReaderViewportLayout) -> some View {
+        ReaderChrome(layout: layout, bookTitle: book.title, chapterTitle: selected.title, paper: background,
+                     bookmarked: currentBookmark != nil, contentAvailable: content != nil && !loading,
+                     speaking: audio.isSpeech && audio.isPlaying && audio.title == selected.title,
+                     canGoBack: chapterIndex > 0, canGoForward: chapterIndex + 1 < chapters.count,
+                     progressDescription: progressDescription,
+                     progressAccessibilityLabel: turnMode == "curl" ? "本章分页进度" : "本章段落进度",
+                     canSeek: progressCount > 1, progress: progressBinding, onScrubbing: scrub,
+                     onBookmark: toggleBookmark, onBookmarks: { showBookmarks = true },
+                     onClose: { saveProgress(); dismiss() }, onContents: { showContents = true },
+                     onSettings: { showSettings = true }, onSpeak: toggleSpeech,
+                     onPrevious: { move(-1) }, onNext: { move(1) }) { moreMenu }
+    }
+
+    private var currentBookmark: ReaderBookmark? {
+        bookmarks.bookmark(bookID: book.id, chapterID: selected.id, position: readingPosition)
+    }
+
+    private var progressCount: Int { turnMode == "curl" ? pagination?.pages.count ?? 0 : paragraphs.count }
+    private var progressIndex: Int {
+        turnMode == "curl" ? pagination?.pageIndex(for: readingPosition) ?? 0 : readingPosition.paragraph
+    }
+    private var progressFraction: Double { ReaderProgressNavigation.fraction(index: progressIndex, count: progressCount) }
+    private var progressDescription: String {
+        let fraction = isScrubbing ? scrubProgress : progressFraction
+        let index = isScrubbing ? ReaderProgressNavigation.index(fraction: fraction, count: progressCount) : progressIndex
+        let unit = turnMode == "curl" ? "页" : "段"
+        guard progressCount > 0 else { return "正在计算本章进度" }
+        guard progressCount > 1 else { return "本章 · 1/1 \(unit)" }
+        return "本章 \(Int((fraction * 100).rounded()))% · \(min(index + 1, progressCount))/\(progressCount) \(unit)"
+    }
+    private var progressBinding: Binding<Double> {
+        Binding(get: { isScrubbing ? scrubProgress : progressFraction }, set: { value in
+            scrubProgress = value
+            // Accessibility slider adjustments may not emit an editing transition.
+            if !isScrubbing { seek(to: value) }
+        })
+    }
+    private func scrub(_ editing: Bool) {
+        if editing { scrubProgress = progressFraction; isScrubbing = true }
+        else { isScrubbing = false; seek(to: scrubProgress) }
+    }
+    private func seek(to fraction: Double) {
+        guard content != nil else { return }
+        let index = ReaderProgressNavigation.index(fraction: fraction, count: progressCount)
+        if turnMode == "curl", let pagination, pagination.pages.indices.contains(index) {
+            jump(to: pagination.pages[index].startPosition)
+        } else { jump(to: ReaderTextPosition(paragraph: index, utf16Offset: 0)) }
+    }
+    private func jump(to position: ReaderTextPosition) {
+        readingPosition = ReaderProgressNavigation.bounded(position, paragraphs: paragraphs)
+        visibleParagraph = readingPosition.paragraph
+        scrollJumpRevision += 1
+        saveProgress()
+    }
+    private func toggleBookmark() {
+        guard content != nil else { return }
+        let excerpt = paragraphs.indices.contains(readingPosition.paragraph) ? paragraphs[readingPosition.paragraph] : ""
+        do { try bookmarks.toggle(bookID: book.id, chapter: selected, position: readingPosition, excerpt: excerpt) }
+        catch { bookmarkError = error.localizedDescription }
+    }
+    private func toggleSpeech() {
+        if audio.isSpeech && audio.title == selected.title { audio.toggle() } else { speakCurrent() }
+    }
+
+    private var bookmarkList: some View {
+        NavigationStack {
+            Group {
+                let saved = bookmarks.bookmarks(bookID: book.id)
+                if let error = bookmarks.loadError {
+                    ContentUnavailableView("书签暂时无法读取", systemImage: "exclamationmark.book", description: Text(error))
+                } else if saved.isEmpty {
+                    ContentUnavailableView("还没有书签", systemImage: "bookmark", description: Text("轻点阅读左上角的书签按钮，保存当前章节和段落位置。"))
+                } else {
+                    List(saved) { bookmark in
+                        Button {
+                            guard let chapter = chapters.first(where: { $0.id == bookmark.chapterID }) else { return }
+                            select(chapter, at: bookmark.position)
+                            showBookmarks = false
+                        } label: {
+                            VStack(alignment: .leading, spacing: 7) {
+                                Text(bookmark.chapterTitle).font(.headline).foregroundStyle(.primary)
+                                Text(bookmark.excerpt).font(.subheadline).foregroundStyle(.secondary).lineLimit(3)
+                                Text("第 \(bookmark.position.paragraph + 1) 段 · \(bookmark.createdAt.formatted(date: .abbreviated, time: .omitted))")
+                                    .font(.caption).foregroundStyle(.tertiary)
+                                if !chapters.contains(where: { $0.id == bookmark.chapterID }) {
+                                    Text("当前目录中暂无此章").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }.padding(.vertical, 5)
+                        }
+                        .disabled(!chapters.contains(where: { $0.id == bookmark.chapterID }))
+                        .accessibilityIdentifier("reader-bookmark-\(bookmark.id.uuidString)")
+                        .swipeActions {
+                            Button("删除", role: .destructive) {
+                                do { try bookmarks.remove(id: bookmark.id) }
+                                catch { bookmarkError = error.localizedDescription }
+                            }
+                        }
+                    }
+                }
             }
-            Spacer()
-            HStack(spacing: 20) {
-                Button { move(-1) } label: { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
-                    .disabled(chapterIndex == 0).accessibilityLabel("上一章")
-                VStack(spacing: 3) {
-                    Text(selected.title).font(.caption.weight(.medium)).lineLimit(1)
-                    Text("第 \(chapterIndex + 1) 章 · 共 \(chapters.count) 章").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                }.frame(maxWidth: 320)
-                Button { move(1) } label: { Image(systemName: "chevron.right").frame(width: 44, height: 44) }
-                    .disabled(chapterIndex + 1 >= chapters.count).accessibilityLabel("下一章")
-            }.buttonStyle(.plain).padding(.horizontal, 8).padding(.vertical, 4)
-                .glassEffect(.regular, in: .capsule).frame(maxWidth: 460)
-        }
-        .tint(FlowTheme.accent)
-        .padding(.horizontal, 18).padding(.top, 12).padding(.bottom, 12)
+            .navigationTitle("本书书签").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showBookmarks = false } } }
+        }.presentationDetents([.medium, .large]).presentationDragIndicator(.visible)
     }
 
     private var moreMenu: some View {
         Menu {
             if cloudProgressFailed { Label("云端暂未同步，本机位置已保存", systemImage: "exclamationmark.icloud") }
-            Button {
-                if audio.isSpeech && audio.title == selected.title { audio.toggle() } else { speakCurrent() }
-            } label: { Label(audio.isPlaying && audio.isSpeech ? "暂停朗读" : "朗读本章", systemImage: "speaker.wave.2") }
+            Button("本书书签", systemImage: "bookmark") { showBookmarks = true }
+                .accessibilityIdentifier("reader-bookmarks-menu")
+            Button("上一章", systemImage: "chevron.left") { move(-1) }.disabled(chapterIndex == 0)
+            Button("下一章", systemImage: "chevron.right") { move(1) }.disabled(chapterIndex + 1 >= chapters.count)
             Button { library.download(book: book, chapters: [selected]) } label: { Label("下载本章", systemImage: "arrow.down.circle") }
             if audio.isSpeech { Button("停止朗读", systemImage: "stop.circle") { audio.stop() } }
             Button("隐藏阅读工具", systemImage: "eye.slash", action: toggleChrome)
         } label: { Image(systemName: cloudProgressFailed ? "exclamationmark.icloud" : "ellipsis").frame(width: 44, height: 44) }
             .accessibilityLabel(cloudProgressFailed ? "云端进度未同步，更多阅读选项" : "更多阅读选项")
+            .accessibilityIdentifier("reader-more")
     }
 
     private func toggleChrome() {
@@ -374,13 +474,13 @@ struct ReaderView: View {
             guard selected.id == target.id else { return }
             content = loaded
             loading = false
-            let restoredParagraph = openAtEnd ? max(0, paragraphs.count - 1) : (saved?.chapterID == target.id ? (saved?.paragraph ?? 0) : 0)
-            let offset = openAtEnd ? ((paragraphs.last ?? "") as NSString).length : (saved?.chapterID == target.id ? saved?.paragraphUTF16Offset ?? 0 : 0)
-            let validParagraph = min(max(0, restoredParagraph), max(0, paragraphs.count - 1))
-            let validOffset = min(max(0, offset), paragraphs.indices.contains(validParagraph) ? (paragraphs[validParagraph] as NSString).length : 0)
-            readingPosition = ReaderTextPosition(paragraph: validParagraph, utf16Offset: validOffset)
+            let destination = requestedPosition
+            let restoredParagraph = destination?.paragraph ?? (openAtEnd ? max(0, paragraphs.count - 1) : (saved?.chapterID == target.id ? (saved?.paragraph ?? 0) : 0))
+            let offset = destination?.utf16Offset ?? (openAtEnd ? ((paragraphs.last ?? "") as NSString).length : (saved?.chapterID == target.id ? saved?.paragraphUTF16Offset ?? 0 : 0))
+            readingPosition = ReaderProgressNavigation.bounded(ReaderTextPosition(paragraph: restoredParagraph, utf16Offset: offset), paragraphs: paragraphs)
+            requestedPosition = nil
             openAtEnd = false
-            visibleParagraph = validParagraph > 0 ? validParagraph : nil
+            visibleParagraph = readingPosition.paragraph > 0 || destination != nil ? readingPosition.paragraph : nil
             saveProgress()
             if shouldContinueSpeaking { shouldContinueSpeaking = false; speakCurrent() }
             guard target.id > 0, book.id > 0 else { return }
@@ -411,8 +511,15 @@ struct ReaderView: View {
             cloudProgressFailed = true
         }
     }
-    private func select(_ chapter: Chapter) {
+    private func select(_ chapter: Chapter, at position: ReaderTextPosition? = nil) {
+        if chapter.id == selected.id, let position, content != nil {
+            jump(to: position)
+            showChrome = false
+            return
+        }
         openAtEnd = false
+        requestedPosition = position
+        isScrubbing = false
         syncRetryTask?.cancel()
         saveProgress()
         if audio.isSpeech { audio.stop() }

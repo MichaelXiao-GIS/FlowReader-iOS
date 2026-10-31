@@ -20,6 +20,7 @@ struct AccountBenefitsView: View {
     @State private var requestID = UUID()
     @State private var sessionGeneration: UUID?
     @State private var actionTask: Task<Void, Never>?
+    @State private var welfare = WelfareViewState()
 
     private var status: SignInStatus? { signState.status }
     private var receipt: SignInReceipt? { signState.receipt }
@@ -74,6 +75,15 @@ struct AccountBenefitsView: View {
                     }
                     Text("VIP 等级与会员状态不代表已购买某一作品的付费章节。")
                 }
+            }
+
+            Section("福利") {
+                NavigationLink { DailyWelfareView(state: welfare) } label: {
+                    Label("日常福利", systemImage: "checklist")
+                }.disabled(signing).accessibilityIdentifier("benefits-daily-welfare")
+                NavigationLink { MemberGiftsView(state: welfare) } label: {
+                    Label("会员礼包", systemImage: "gift")
+                }.disabled(signing).accessibilityIdentifier("benefits-member-gifts")
             }
 
             Section {
@@ -151,8 +161,8 @@ struct AccountBenefitsView: View {
         membership = nil
         appAccount = nil; webAccount = nil
         membershipError = nil; identityError = nil; needsAppLogin = false; needsWebLogin = false
-        let appSession = await SFAPI.shared.hasAppSession()
-        let webSession = await SFAPI.shared.hasWebSession()
+        let appSession = await SFAPI.shared.hasSavedAppLogin()
+        let webSession = await SFAPI.shared.hasSavedWebLogin()
         guard requestID == request else { return }
         appConnected = appSession
         webConnected = webSession
@@ -167,7 +177,7 @@ struct AccountBenefitsView: View {
     @MainActor private func loadIdentities(_ request: UUID, appSession: Bool, webSession: Bool) async {
         if webSession {
             do {
-                let account = try await SFAPI.shared.profile()
+                let account = try await SFAPI.shared.webProfile()
                 if await isCurrent(request) { webAccount = account }
             } catch {
                 if await isCurrent(request), !AccountShelfState.isCancellation(error) {

@@ -18,18 +18,19 @@ struct AccountView: View {
                         .font(.system(size: 48, weight: .ultraLight)).foregroundStyle(FlowTheme.accent)
                     VStack(alignment: .leading, spacing: 6) {
                         Text(cloud.account?.name ?? "你的阅读空间").font(.title3.weight(.semibold))
-                        Text(cloud.isConnected ? "已连接菠萝包账号" : "登录菠萝包，连接云端书架")
+                        Text(cloud.account != nil ? "你的云端阅读账号" : "登录菠萝包，连接云端书架")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }.padding(.vertical, 10)
-                if !cloud.webConnected || cloud.webNeedsLogin {
-                    Button(cloud.webNeedsLogin ? "重新连接网页账号" : cloud.account == nil ? "登录菠萝包" : "连接官方网页账号") { showLogin = true }
-                        .accessibilityIdentifier("official-login")
+                if cloud.appConnected {
+                    Label("账号已连接", systemImage: "checkmark.circle").foregroundStyle(FlowTheme.accent)
+                    Button("切换账号") { showAppLogin = true }
                 } else {
-                    Label("网页账号已连接", systemImage: "checkmark.circle").foregroundStyle(FlowTheme.accent)
+                    Button(cloud.appNeedsLogin ? "重新登录菠萝包" : "登录菠萝包") { showAppLogin = true }
+                        .accessibilityIdentifier("account-login")
                 }
             } footer: {
-                Text("云端收藏与继续阅读已整合到“书库”。")
+                Text("登录后同步书架、云端续读、会员福利与有声。收藏与阅读进度位于“书库”。")
             }
             if let error = cloud.accountError {
                 Section("账号信息") {
@@ -45,14 +46,25 @@ struct AccountView: View {
                 .accessibilityIdentifier("account-benefits")
             }
             Section {
-                if cloud.appConnected {
-                    Label("账号服务已连接", systemImage: "checkmark.circle").foregroundStyle(FlowTheme.accent)
+                if cloud.webConnected {
+                    Label(cloud.webAccount.map { "已授权 · \($0.name)" } ?? "网页阅读已授权", systemImage: "checkmark.circle")
+                        .foregroundStyle(FlowTheme.accent)
+                    Button("更换网页授权") { showLogin = true }
                 } else {
-                    Button("连接账号服务") { showAppLogin = true }
+                    Button(cloud.webNeedsLogin ? "重新授权网页阅读" : "授权网页阅读") { showLogin = true }
+                        .accessibilityIdentifier("official-login")
                 }
-            } header: { Text("账号服务") }
+                if let message = cloud.webConnectionError {
+                    Text(message).font(.caption).foregroundStyle(.secondary)
+                }
+                if let primary = cloud.account, let web = cloud.webAccount,
+                   cloud.usesAppAccount, !primary.matchesAccountIdentity(web) {
+                    Text("网页授权与当前账号不同，请更换为同一账号后读取已购章节。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } header: { Text("网页阅读授权 · 可选") }
             footer: {
-                Text("网页登录用于书架、VIP 等级与文字阅读；账号服务还支持签到与有声。两种连接分别保存。")
+                Text("账号登录已支持授权正文；网页授权仅供旧版阅读方式兼容使用，失效不会阻止书架与福利同步。")
             }
             Section("偏好设置") {
                 Picker("外观", selection: $appearance) {
@@ -62,7 +74,7 @@ struct AccountView: View {
                 }
                 Button("关于菠萝阅") { showAbout = true }.foregroundStyle(.primary)
             }
-            if cloud.isConnected {
+            if cloud.hasSavedConnection {
                 Section {
                     Button("退出登录", role: .destructive) { showLogout = true }
                 }
@@ -107,7 +119,7 @@ struct AccountServiceLoginView: View {
                         .autocorrectionDisabled()
                     SecureField("密码", text: $password).textContentType(.password)
                 } footer: {
-                    Text("连接后可读取会员信息、每日签到与播放有声作品。此连接与网页登录分别保存；请确认使用的账号。登录可能需要在官方客户端完成验证，密码不会保存。")
+                    Text("登录后同步书架、云端续读、会员福利与有声作品。密码只用于本次登录，不会保存；如需额外验证，请在官方客户端完成。")
                 }
                 if let error {
                     Section { Text(error).font(.subheadline).foregroundStyle(.red) }

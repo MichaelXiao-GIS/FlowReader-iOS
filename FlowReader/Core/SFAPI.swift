@@ -47,9 +47,14 @@ actor SFAPI {
     func hasSession() -> Bool { webSession?.isPresent == true || hasAppSession() }
     func hasAppSession() -> Bool { appSession?.isAppPresent == true }
     func hasWebSession() -> Bool { webSession?.isPresent == true }
+    func hasSavedAppLogin() -> Bool { appSession?.cookies.contains { $0.name == "session_APP" } == true }
+    func hasSavedWebLogin() -> Bool { webSession?.cookies.contains { $0.name == "session_PC" } == true }
 
     /// Changes whenever either independent account session changes, including a failed replacement.
     func sessionGeneration() -> UUID { identityGeneration }
+
+    /// Uses the same installation identity as the authenticated App request headers.
+    func installationIdentifier() -> String { deviceID }
 
     func recordReadableChapter(_ chapter: Chapter, generation: UUID) {
         guard generation == identityGeneration else { return }
@@ -68,7 +73,7 @@ actor SFAPI {
         webSession = candidate
         identityGeneration = UUID()
         do {
-            let account = try await profile()
+            let account = try await webProfile()
             if persistsSessions { try SessionVault.write(JSONEncoder().encode(candidate)) }
             identityGeneration = UUID()
             return account
@@ -124,6 +129,7 @@ actor SFAPI {
 
     func content(chapter: Chapter) async throws -> ChapterContent {
         guard chapter.id > 0, chapter.bookID > 0 else { throw SFAPIError.invalidIdentifier }
+        if hasSavedAppLogin() { return try await appContent(chapter: chapter) }
         if chapter.isVIP { return try await vipContent(chapter: chapter) }
         let html = try await webText(url: chapter.officialURL, referer: URL(string: "https://book.sfacg.com/Novel/\(chapter.bookID)/MainIndex/"))
         guard let text = HTMLParser.chapterBody(html), !text.contains("章节内容当前不可用") else { throw SFAPIError.emptyContent }
@@ -132,7 +138,11 @@ actor SFAPI {
     }
 
     func profile() async throws -> AccountProfile {
-        if webSession?.isPresent != true, hasAppSession() { return try await appProfile() }
+        if hasAppSession() && !hasWebSession() { return try await appProfile() }
+        return try await webProfile()
+    }
+
+    func webProfile() async throws -> AccountProfile {
         guard webSession?.isPresent == true else { throw SFAPIError.loginRequired }
         let text = try await webText(url: URL(string: "https://passport.sfacg.com/Ajax/GetLoginInfo.ashx")!)
         guard HTMLParser.jsField("login", in: text) == "true" else { throw SFAPIError.loginRequired }
@@ -150,10 +160,8 @@ actor SFAPI {
     }
 
     func bookshelfSync() async throws -> BookshelfSyncResult {
-        if webSession?.isPresent != true, hasAppSession() {
-            return BookshelfSyncResult(books: try await appBookshelf(), failedSectionCount: 0)
-        }
-        let account = try await profile()
+        if hasSavedAppLogin() { return try await appBookshelfSync() }
+        let account = try await webProfile()
         return try await WebBookshelfLoader.load(accountName: account.accountName, publicFetch: { url, referer in
             var request = await self.webRequest(url: url, referer: referer)
             request.setValue(nil, forHTTPHeaderField: "Cookie")
@@ -253,18 +261,6 @@ actor SFAPI {
         return AccountProfile(id: id, name: user["nickName"] as? String ?? "菠萝包读者", accountName: user["userName"] as? String ?? String(id), avatarURL: (user["avatar"] as? String).flatMap(Self.remoteURL))
     }
 
-    private func appBookshelf() async throws -> [Book] {
-        guard let pockets = try await appData(path: "/user/Pockets", query: ["expand": "novels"], includeSession: true) as? [[String: Any]] else { throw SFAPIError.invalidResponse }
-        return pockets.flatMap { pocket -> [Book] in
-            let expand = pocket["expand"] as? [String: Any] ?? [:]
-            return (expand["novels"] as? [[String: Any]] ?? []).compactMap { row in
-                guard var book = Self.parseBook(row) else { return nil }
-                book.shelfName = pocket["name"] as? String
-                return book
-            }
-        }
-    }
-
     private func deviceBody(accountID: Int, full: Bool) -> [String: Any] {
         var body: [String: Any] = ["originUa": "Dalvik/2.1.0 (Linux; U; Android 16; V2238A Build/BP2A.250605.031.A3)", "accountId": accountID, "package": "com.sfacg", "webViewUA": "Mozilla/5.0 (Linux; Android 16; V2238A Build/BP2A.250605.031.A3; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/138.0.7204.179 Mobile Safari/537.36", "abi": "arm64-v8a", "deviceId": deviceID, "version": "5.2.84"]
         if full { body["manufacturer"] = "vivo"; body["pushInfo"] = [["channelName": "umeng"]] }
@@ -288,7 +284,10 @@ actor SFAPI {
         request.setValue("UTF-8", forHTTPHeaderField: "Accept-Charset")
         request.setValue("boluobao/5.2.84(android;36)/VIVO/\(deviceID)/\(deviceChannel)", forHTTPHeaderField: "User-Agent")
         request.setValue(try Self.securityHeader(deviceID: deviceID), forHTTPHeaderField: "SFSecurity")
-        if includeSession { request.setValue(appSession?.header(for: url), forHTTPHeaderField: "Cookie") }
+        if includeSession {
+            request.setValue(appSession?.header(for: url), forHTTPHeaderField: "Cookie")
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+        }
         if let body {
             request.httpMethod = method ?? "POST"
             request.setValue("application/json; charset=UTF-8", forHTTPHeaderField: "Content-Type")

@@ -12,6 +12,17 @@ final class MembershipTests: XCTestCase {
         XCTAssertNil(parsed.expiresAt)
     }
 
+    func testConfirmedMemberFlagIsIndependentFromVIPLevel() {
+        let active = MembershipParser.appUser(["expand": ["member": ["isOpen": true]]])
+        XCTAssertEqual(active.isMember, true)
+        XCTAssertNil(active.vipLevel)
+        XCTAssertNil(active.expiresAt)
+        let inactive = MembershipParser.appUser(["expand": ["member": ["isOpen": false]]])
+        XCTAssertEqual(inactive.isMember, false)
+        let malformed = MembershipParser.appUser(["expand": ["member": ["isOpen": 1]]])
+        XCTAssertNil(malformed.isMember)
+    }
+
     func testMissingVIPIsUnknownInsteadOfZero() {
         let parsed = MembershipParser.appUser(["expand": [:]])
         XCTAssertNil(parsed.vipLevel)

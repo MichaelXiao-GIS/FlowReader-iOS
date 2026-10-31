@@ -10,7 +10,7 @@ final class FlowReaderUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
         app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
-        if name.contains("testImmersiveCurlAndLandscapeSpread") { app.launchArguments.append("--long-reader-fixture") }
+        if name.contains("testImmersiveCurlAndLandscapeSpread") || name.contains("testBooksControlsBookmarksAndProgress") { app.launchArguments.append("--long-reader-fixture") }
         app.launch()
     }
 
@@ -155,6 +155,50 @@ final class FlowReaderUITests: XCTestCase {
         XCTAssertFalse(app.buttons["reader-settings"].exists, "重新进入阅读仍默认沉浸")
     }
 
+    func testBooksControlsBookmarksAndProgress() throws {
+        let book = app.buttons["book--100"]
+        XCTAssertTrue(book.waitForExistence(timeout: 15))
+        book.tap()
+        let start = app.buttons["start-reading"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        start.tap()
+        XCTAssertTrue(app.staticTexts["reader-paragraph-0"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["reader-bookmark"].exists)
+        toggleReaderTools()
+        let bookmark = app.buttons["reader-bookmark"]
+        let settings = app.buttons["reader-settings"]
+        let contents = app.buttons["reader-contents"]
+        let progress = app.sliders["reader-progress"]
+        XCTAssertTrue(bookmark.waitForExistence(timeout: 5))
+        XCTAssertTrue(progress.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(settings.frame.midX, bookmark.frame.midX + 80)
+        XCTAssertEqual(settings.frame.midX, contents.frame.midX, accuracy: 8, "阅读设置应沿右侧竖排")
+        XCTAssertGreaterThan(settings.frame.midY, contents.frame.midY)
+        capture("20-Books式阅读工具")
+        bookmark.tap()
+        XCTAssertEqual(bookmark.label, "移除此处书签")
+        let initialProgress = progress.value as? String
+        progress.adjust(toNormalizedSliderPosition: 0.65)
+        XCTAssertNotEqual(progress.value as? String, initialProgress, "底部滑条必须改变当前章节的真实位置")
+        XCTAssertEqual(bookmark.label, "添加此处书签", "跳转后应离开原书签位置")
+        capture("21-拖动章节进度")
+        app.buttons["reader-bookmarks"].tap()
+        let saved = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "reader-bookmark-")).firstMatch
+        XCTAssertTrue(saved.waitForExistence(timeout: 5))
+        capture("22-本机书签")
+        saved.tap()
+        XCTAssertTrue(app.staticTexts["reader-paragraph-0"].waitForExistence(timeout: 5))
+        toggleReaderTools()
+        XCTAssertTrue(bookmark.waitForExistence(timeout: 5))
+        XCTAssertEqual(bookmark.label, "移除此处书签", "选择书签应回到保存的段落")
+        app.buttons["reader-close"].tap()
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        start.tap()
+        XCTAssertTrue(app.staticTexts["reader-paragraph-0"].waitForExistence(timeout: 10))
+        toggleReaderTools()
+        XCTAssertEqual(bookmark.label, "移除此处书签", "关闭阅读后书签仍然保留")
+    }
+
     private func toggleReaderTools() {
         // Resolve the visible reading surface so XCTest retains its display/hit-point context.
         // An application-root coordinate can target Duo's inactive primary display.
@@ -186,9 +230,15 @@ final class FlowReaderUITests: XCTestCase {
         benefits.tap()
         let connect = app.buttons["benefits-connect"]
         XCTAssertTrue(connect.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["连接账号服务后，可读取今日状态并签到。"].exists, "未连接账号服务时不能假装已读取签到状态")
+        let signInHint = app.staticTexts["连接账号服务后，可读取今日状态并签到。"]
+        reveal(signInHint)
+        XCTAssertTrue(signInHint.exists, "未连接账号服务时不能假装已读取签到状态")
         XCTAssertFalse(app.buttons["sign-in-submit"].exists, "未连接时不应显示可提交的签到操作")
         capture("09-会员与签到未连接")
+        for _ in 0..<6 {
+            if connect.exists && connect.isHittable { break }
+            app.swipeDown()
+        }
         connect.tap()
         XCTAssertTrue(app.secureTextFields.firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.navigationBars["连接账号服务"].exists)
@@ -206,6 +256,49 @@ final class FlowReaderUITests: XCTestCase {
         selectTab("发现")
         XCTAssertTrue(app.buttons["book--100"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.searchFields.firstMatch.exists, "发现页应显示原生搜索入口")
+    }
+
+    func testWelfareEntriesRequireLoginWithoutClaimActions() throws {
+        XCTAssertTrue(app.buttons["book--100"].waitForExistence(timeout: 15))
+        selectTab("我的")
+        let benefits = app.buttons["account-benefits"]
+        reveal(benefits)
+        benefits.tap()
+        XCTAssertTrue(app.buttons["benefits-connect"].waitForExistence(timeout: 5))
+
+        let destinations = [
+            (entry: "benefits-daily-welfare", login: "welfare-connect", actionPrefix: "welfare-task-", title: "日常福利"),
+            (entry: "benefits-member-gifts", login: "member-gifts-connect", actionPrefix: "member-gift-", title: "会员礼包")
+        ]
+        for destination in destinations {
+            let entry = app.buttons[destination.entry]
+            reveal(entry)
+            entry.tap()
+            let login = app.buttons[destination.login]
+            XCTAssertTrue(login.waitForExistence(timeout: 10), "\(destination.title)未登录时应提供登录入口")
+            XCTAssertEqual(login.label, "登录菠萝包")
+            let taskActions = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", destination.actionPrefix))
+            XCTAssertEqual(taskActions.count, 0, "未确认账号身份时不得展示匿名目录中的领取操作")
+            for title in ["领取任务", "领取奖励", "领取礼包"] {
+                XCTAssertFalse(app.buttons[title].exists, "未登录时不应出现\(title)按钮")
+            }
+            capture("16-\(destination.title)未登录")
+
+            login.tap()
+            let password = app.secureTextFields.firstMatch
+            XCTAssertTrue(password.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.navigationBars["连接账号服务"].exists)
+            let submit = app.buttons["连接"]
+            XCTAssertTrue(submit.waitForExistence(timeout: 5))
+            XCTAssertFalse(submit.isEnabled, "空白登录表单不能提交")
+            app.navigationBars.buttons["取消"].tap()
+            XCTAssertTrue(password.waitForNonExistence(timeout: 5), "取消应关闭登录面板")
+            XCTAssertTrue(login.waitForExistence(timeout: 5))
+            XCTAssertEqual(taskActions.count, 0, "取消登录后仍不得出现领取操作")
+            navigateBack(until: entry, labels: ["会员与签到", "返回", "Back"])
+        }
+        navigateBack(until: benefits, labels: ["我的", "返回", "Back"])
+        XCTAssertTrue(benefits.waitForExistence(timeout: 5))
     }
 
     private func reveal(_ element: XCUIElement) {

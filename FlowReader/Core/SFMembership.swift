@@ -17,7 +17,7 @@ struct MembershipInfo: Equatable, Sendable {
 
 extension SFAPI {
     func membership() async throws -> MembershipInfo {
-        if hasAppSession() {
+        if hasSavedAppLogin() {
             guard let user = try await appData(path: "/user", query: ["expand": "vipInfo,newVip,member,dianyamember"], includeSession: true) as? [String: Any] else { throw SFAPIError.invalidResponse }
             var result = MembershipParser.appUser(user)
             if result.needsLegacyLevelLookup {
@@ -79,7 +79,7 @@ enum MembershipParser {
             vipLevel: level,
             vipName: isNew == true ? nonempty(newVip["name"]) : nil,
             system: isNew.map { $0 ? "new" : "legacy" },
-            isMember: nil,
+            isMember: boolean((expand["member"] as? [String: Any])?["isOpen"]),
             membershipName: nil,
             expiresAt: nil
         )

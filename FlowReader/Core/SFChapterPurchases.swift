@@ -16,13 +16,9 @@ extension SFAPI {
             guard !verified.isEmpty else { throw SFAPIError.server("连接同一账号的账号服务后，可确认章节购买状态。") }
             return ChapterPurchaseSnapshot(states: verified, generation: generation)
         }
-        let appAccount = try await accountServiceProfile()
-        if hasWebSession() {
-            let webAccount = try await profile()
-            guard appAccount.matchesAccountIdentity(webAccount) else {
-                throw SFAPIError.server("网页与账号服务不是同一账号，暂不显示购买状态。请连接同一账号后刷新。")
-            }
-        }
+        _ = try await accountServiceProfile()
+        // Purchase facts belong to the primary App account; optional Web authorization is
+        // checked separately when opening a paid chapter, not when reading this catalogue.
         let request = try appRequest(path: "/novels/\(bookID)/dirs", query: [:], body: nil, includeSession: true, method: "GET")
         let (data, response) = try await send(request, acceptServerErrors: true, expectedGeneration: generation)
         let payload = try Self.parseAppResponse(data, response: response)

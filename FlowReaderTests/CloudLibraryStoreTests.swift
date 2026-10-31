@@ -31,6 +31,108 @@ final class CloudLibraryStoreTests: XCTestCase {
         XCTAssertNotNil(store.shelf.notice)
     }
 
+    func testExpiredOptionalWebSessionDoesNotBlockAppLibrary() async {
+        let fixture = CloudClientFixture()
+        fixture.appConnected = true
+        fixture.useConnectionSnapshot = true
+        fixture.connectionSnapshot = AccountConnectionSnapshot(generation: fixture.generation, usesAppAccount: true,
+            appAccount: AccountProfile(id: 41, name: "测试主账号", accountName: "test_primary"),
+            webError: "网页授权已过期", webNeedsLogin: true)
+        let store = CloudLibraryStore(client: fixture.client)
+        await store.refresh()
+        XCTAssertEqual(store.account?.id, 41)
+        XCTAssertTrue(store.appConnected)
+        XCTAssertFalse(store.webConnected)
+        XCTAssertTrue(store.webNeedsLogin)
+        XCTAssertTrue(store.isConnected)
+        XCTAssertEqual(store.books.map(\.id), [1])
+        XCTAssertNil(store.accountError)
+    }
+
+    func testExpiredPrimaryAccountDoesNotSilentlySwitchToSecondaryWebAccount() async {
+        let fixture = CloudClientFixture()
+        fixture.appConnected = true
+        fixture.useConnectionSnapshot = true
+        fixture.connectionSnapshot = AccountConnectionSnapshot(generation: fixture.generation, usesAppAccount: true,
+            webAccount: AccountProfile(id: 99, name: "网页测试账号", accountName: "secondary"),
+            appError: "账号登录已失效", appNeedsLogin: true)
+        let store = CloudLibraryStore(client: fixture.client)
+        await store.refresh()
+        XCTAssertNil(store.account)
+        XCTAssertFalse(store.appConnected)
+        XCTAssertTrue(store.appNeedsLogin)
+        XCTAssertFalse(store.isConnected)
+        XCTAssertEqual(fixture.shelfCalls, 0)
+    }
+
+    func testCancelledRefreshAfterLocalAppExpiryPreservesPrimaryAccountScope() async {
+        let fixture = CloudClientFixture()
+        fixture.appConnected = true
+        fixture.webConnected = true
+        fixture.useConnectionSnapshot = true
+        fixture.connectionSnapshot = AccountConnectionSnapshot(generation: fixture.generation, usesAppAccount: true,
+            appAccount: AccountProfile(id: 41, name: "App 测试账号", accountName: "primary_a"),
+            webAccount: AccountProfile(id: 99, name: "网页测试账号", accountName: "secondary_b"))
+        let store = CloudLibraryStore(client: fixture.client)
+        await store.refresh()
+        XCTAssertTrue(store.usesAppAccount)
+        XCTAssertEqual(store.account?.id, 41)
+        XCTAssertEqual(store.webAccount?.id, 99)
+        XCTAssertEqual(store.books.map(\.id), [1])
+
+        // Local cookie expiry does not change the saved primary login or its generation.
+        // A cancelled verification must leave the previous verified scope intact.
+        fixture.appConnected = false
+        fixture.connectionError = CancellationError()
+        await store.refreshAccount()
+
+        XCTAssertEqual(fixture.connectionCalls, 2)
+        XCTAssertTrue(store.usesAppAccount, "Cancellation must not promote the independent Web account")
+        XCTAssertTrue(store.hasSavedConnection)
+        XCTAssertEqual(store.account?.id, 41)
+        XCTAssertEqual(store.webAccount?.id, 99)
+        XCTAssertEqual(store.sessionGeneration, fixture.generation)
+        XCTAssertEqual(store.books.map(\.id), [1])
+        XCTAssertEqual(fixture.shelfCalls, 1)
+        XCTAssertNil(store.accountError)
+        XCTAssertFalse(store.accountLoading)
+    }
+
+    func testUnknownConnectionsAreNeverDisplayedAsVerified() async {
+        let fixture = CloudClientFixture()
+        fixture.appConnected = true
+        fixture.useConnectionSnapshot = true
+        fixture.connectionSnapshot = AccountConnectionSnapshot(generation: fixture.generation, usesAppAccount: true,
+            appError: "网络暂不可读", webError: "网络暂不可读")
+        let store = CloudLibraryStore(client: fixture.client)
+        await store.refreshAccount()
+        XCTAssertFalse(store.appConnected)
+        XCTAssertFalse(store.webConnected)
+        XCTAssertFalse(store.isConnected)
+        XCTAssertTrue(store.hasSavedConnection)
+        XCTAssertFalse(store.accountLoading)
+    }
+
+    func testIdentityAfterTransientFailureCannotMergePreviousPartialShelf() async {
+        let fixture = CloudClientFixture()
+        fixture.appConnected = true
+        fixture.useConnectionSnapshot = true
+        fixture.connectionSnapshot = AccountConnectionSnapshot(generation: fixture.generation, usesAppAccount: true,
+            appAccount: AccountProfile(id: 41, name: "甲", accountName: "account_a"))
+        let store = CloudLibraryStore(client: fixture.client)
+        await store.refresh()
+        fixture.connectionSnapshot = AccountConnectionSnapshot(generation: fixture.generation, usesAppAccount: true,
+            appError: "暂不可读")
+        await store.refreshAccount()
+        XCTAssertNil(store.account)
+        fixture.connectionSnapshot = AccountConnectionSnapshot(generation: fixture.generation, usesAppAccount: true,
+            appAccount: AccountProfile(id: 42, name: "乙", accountName: "account_b"))
+        fixture.shelfResult = .success(BookshelfSyncResult(books: [Book(id: 2, title: "新账号藏书", author: "测试")], failedSectionCount: 1))
+        await store.refresh()
+        XCTAssertEqual(store.books.map(\.id), [2])
+        XCTAssertEqual(store.account?.id, 42)
+    }
+
     func testInFlightOldGenerationIsDiscarded() async throws {
         let fixture = CloudClientFixture()
         fixture.suspendShelf = true
@@ -72,6 +174,25 @@ final class CloudLibraryStoreTests: XCTestCase {
         let stale = try await store.recordOpenedChapter(book: book, chapter: chapter, expectedGeneration: oldGeneration)
         XCTAssertFalse(stale)
         XCTAssertEqual(fixture.writeCalls, 1, "Changing accounts must prevent the previous account's pending reading position from being sent")
+    }
+
+    func testAppOnlyLoginCanWriteOpenedChapterProgress() async throws {
+        let fixture = CloudClientFixture()
+        fixture.appConnected = true
+        fixture.webConnected = false
+        let store = CloudLibraryStore(client: fixture.client)
+        await store.checkSessionGeneration()
+        let book = Book(id: 1, title: "原创测试", author: "测试作者")
+        let chapter = Chapter(id: 10, bookID: 1, volumeID: 1, volumeTitle: "正文", title: "测试章", order: 0)
+
+        let recorded = try await store.recordOpenedChapter(book: book, chapter: chapter, expectedGeneration: fixture.generation)
+        XCTAssertTrue(recorded)
+        XCTAssertEqual(fixture.writeCalls, 1, "A valid App login must reach the progress writer without a Web login")
+
+        fixture.appConnected = false
+        let disconnected = try await store.recordOpenedChapter(book: book, chapter: chapter, expectedGeneration: fixture.generation)
+        XCTAssertFalse(disconnected)
+        XCTAssertEqual(fixture.writeCalls, 1, "No login must not dispatch a second progress write")
     }
 
     func testHistoryLoadsOnceAndConfirmedWriteUpdatesOnlyVerifiedScope() async throws {
@@ -147,6 +268,11 @@ private final class CloudClientFixture {
     var shelfCalls = 0
     var writeCalls = 0
     var appConnected = false
+    var webConnected = true
+    var useConnectionSnapshot = false
+    var connectionSnapshot: AccountConnectionSnapshot?
+    var connectionError: Error?
+    var connectionCalls = 0
     var historyCalls = 0
     var historyRecords: [CloudReadingProgress] = []
     var suspendHistory = false
@@ -158,7 +284,7 @@ private final class CloudClientFixture {
         CloudLibraryStore.Client(
             generation: { self.generation },
             hasAppSession: { self.appConnected },
-            hasWebSession: { true },
+            hasWebSession: { self.webConnected },
             profile: { try self.profileResult.get() },
             bookshelf: {
                 self.shelfCalls += 1
@@ -173,7 +299,13 @@ private final class CloudClientFixture {
                 self.historyCalls += 1
                 if self.suspendHistory { return try await withCheckedThrowingContinuation { self.pendingHistory = $0 } }
                 return CloudReadingSnapshot(records: self.historyRecords, generation: self.generation)
-            }
+            },
+            connections: useConnectionSnapshot ? {
+                self.connectionCalls += 1
+                if let error = self.connectionError { throw error }
+                guard let snapshot = self.connectionSnapshot else { throw SFAPIError.invalidResponse }
+                return snapshot
+            } : nil
         )
     }
 }

@@ -27,12 +27,7 @@ extension SFAPI {
         guard hasAppSession() else { throw SFAPIError.authenticationRequired("连接同一账号的账号服务后，可读取云端阅读位置。") }
         let generation = sessionGeneration()
         let account = try await accountServiceProfile()
-        if hasWebSession() {
-            let webAccount = try await profile()
-            guard account.matchesAccountIdentity(webAccount) else {
-                throw SFAPIError.server("网页登录与账号服务不是同一账号，请连接同一账号后同步阅读位置。")
-            }
-        }
+        // History belongs to the primary App account. An optional expired Web login must not block it.
         guard generation == sessionGeneration() else { throw CancellationError() }
         var request = try appRequest(path: "/user/NovelViews", query: [:], body: nil, includeSession: true, method: "GET")
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -41,12 +36,24 @@ extension SFAPI {
         return CloudReadingSnapshot(records: try CloudProgressParser.readingHistory(payload, accountID: account.id), generation: generation)
     }
 
-    /// Official mobile chapter pages submit these two fields after a chapter is opened.
     /// Call only for a newly chosen reading position, never when importing local history.
+    /// The primary App account is authoritative; Web-only accounts retain the official mobile fallback.
     func recordCloudProgress(bookID: Int, chapterID: Int, expectedGeneration: UUID) async throws -> CloudProgressReceipt {
         guard bookID > 0, chapterID > 0 else { throw SFAPIError.invalidResponse }
         guard sessionGeneration() == expectedGeneration else { throw CancellationError() }
-        guard hasWebSession() else { throw SFAPIError.authenticationRequired("请先连接网页登录，再同步阅读位置。") }
+        if hasSavedAppLogin() {
+            _ = try await accountServiceProfile()
+            try Task.checkCancellation()
+            guard sessionGeneration() == expectedGeneration else { throw CancellationError() }
+            let plan = try AppCloudProgressProtocol.update(bookID: bookID, chapterID: chapterID)
+            let request = try appRequest(path: plan.path, query: [:], body: plan.body, includeSession: true, method: plan.method)
+            let (data, response) = try await send(request, acceptServerErrors: true, expectedGeneration: expectedGeneration)
+            _ = try Self.parseAppResponse(data, response: response)
+            try Task.checkCancellation()
+            guard sessionGeneration() == expectedGeneration else { throw CancellationError() }
+            return CloudProgressReceipt(bookID: bookID, chapterID: chapterID, confirmedAt: Date())
+        }
+        guard hasWebSession() else { throw SFAPIError.authenticationRequired("请先连接账号服务，再同步阅读位置。") }
         let url = URL(string: "https://m.sfacg.com/API/Book.ashx?op=addviewrecord")!
         var request = webRequest(url: url, referer: URL(string: "https://m.sfacg.com/c/\(chapterID)/"))
         request.httpMethod = "POST"
@@ -59,6 +66,24 @@ extension SFAPI {
         guard sessionGeneration() == expectedGeneration else { throw CancellationError() }
         try CloudProgressParser.requireAcknowledgment(data)
         return CloudProgressReceipt(bookID: bookID, chapterID: chapterID, confirmedAt: Date())
+    }
+}
+
+enum AppCloudProgressProtocol {
+    struct Request: Sendable {
+        let path: String
+        let method: String
+        let chapterID: Int
+        var body: [String: Any] {
+            // The official Android request also supplies this flag. Disable the optional
+            // card-drop action: this reader only reports the chapter actually opened.
+            ["chapterId": chapterID, "triggerCardPieceDrop": false]
+        }
+    }
+
+    static func update(bookID: Int, chapterID: Int) throws -> Request {
+        guard bookID > 0, chapterID > 0 else { throw SFAPIError.invalidIdentifier }
+        return Request(path: "/user/NovelViews/\(bookID)", method: "PUT", chapterID: chapterID)
     }
 }
 
