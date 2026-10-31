@@ -1,0 +1,35 @@
+{
+  "fill": {
+    "automatic-gradient": "extended-srgb:0.97000,0.93000,0.84000,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "BookLeaf.png",
+          "name": "Book and leaves",
+          "position": {
+            "scale": 1.0,
+            "translation-in-points": [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.25
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.18
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "iOS"
+    ]
+  }
+}
