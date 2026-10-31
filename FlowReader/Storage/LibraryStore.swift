@@ -275,6 +275,13 @@ final class LibraryStore {
     func seedDemoIfNeeded() {
         guard localBook(id: -100) == nil else { return }
         let book = Book(id: -100, title: "在风抵达之前", author: "Flow 原创示例", coverURL: nil, summary: "海边的小镇，一间只在黄昏开门的书店，与一封尚未寄出的信。此书为应用原创演示内容。", category: "治愈日常", tags: ["原创示例", "海边", "日常"], isFinished: true)
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--uitesting") && ProcessInfo.processInfo.arguments.contains("--long-catalog-fixture") {
+            do { try LongCatalogFixture.install(in: self, book: book) }
+            catch { errorMessage = error.localizedDescription }
+            return
+        }
+        #endif
         let titles = ["第一章 海边的书店", "第二章 风从远方来", "第三章 留给明天的一页"]
         var texts = [
             "海风穿过街角时，书店的铜铃轻轻响了一声。\n\n林夏抬起头，看见门口站着一个抱着旧地图的女孩。地图的边缘已经磨软，上面用蓝色铅笔圈着一座不存在的灯塔。\n\n“我想找一本书。”女孩说。\n\n小镇的书店不大。木架贴着墙壁，从地面一直伸向屋顶；下午的光落在书脊上，仿佛有人把整个夏天收进了这里。\n\n林夏合上手中的笔记：“书名呢？”\n\n女孩摇了摇头，把地图摊在桌上。那座灯塔旁边有一行很小的字：如果你不知道下一站去哪里，就先听一听风。\n\n他认得那行字。那是祖父的笔迹。\n\n窗外，最后一班渡船驶离码头，水面留下长长的白色痕迹。林夏忽然觉得，这个原本平凡的黄昏，正在慢慢翻向新的一页。",

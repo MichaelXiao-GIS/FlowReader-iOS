@@ -84,11 +84,13 @@ struct ReaderView: View {
         .interactiveDismissDisabled()
         .task(id: "\(selected.id):\(loadRevision)") { await load() }
         .sheet(isPresented: $showContents) {
-            NavigationStack {
-                contentsList
-                    .navigationTitle("目录")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showContents = false } } }
+            ReaderContentsSheet(
+                chapters: chapters,
+                currentChapterID: selected.id,
+                downloadedIDs: library.localBook(id: book.id)?.downloadedIDs ?? []
+            ) { chapter in
+                select(chapter)
+                showContents = false
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
@@ -381,34 +383,6 @@ struct ReaderView: View {
 
     private func toggleChrome() {
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { showChrome.toggle() }
-    }
-
-    private var contentsList: some View {
-        List {
-            ForEach(Array(Dictionary(grouping: chapters, by: \.volumeTitle).keys).sorted { lhs, rhs in
-                (chapters.firstIndex(where: { $0.volumeTitle == lhs }) ?? 0) < (chapters.firstIndex(where: { $0.volumeTitle == rhs }) ?? 0)
-            }, id: \.self) { volume in
-                Section(volume.isEmpty ? "正文" : volume) {
-                    ForEach(chapters.filter { $0.volumeTitle == volume }) { chapter in
-                        Button {
-                            select(chapter)
-                            showContents = false
-                        } label: {
-                            HStack(spacing: 12) {
-                                Text(chapter.title).foregroundStyle(chapter.id == selected.id ? FlowTheme.accent : .primary)
-                                Spacer()
-                                if library.localBook(id: book.id)?.downloadedIDs.contains(chapter.id) == true {
-                                    Image(systemName: "arrow.down.circle.fill").foregroundStyle(.secondary).font(.caption)
-                                        .accessibilityLabel("已下载")
-                                }
-                                ChapterPurchaseBadge(chapter: chapter)
-                                if chapter.id == selected.id { Image(systemName: "speaker.wave.2.fill").foregroundStyle(FlowTheme.accent).font(.caption) }
-                            }.padding(.vertical, 5)
-                        }.accessibilityIdentifier("reader-chapter-\(chapter.id)").listRowBackground(chapter.id == selected.id ? FlowTheme.accent.opacity(0.07) : Color.clear)
-                    }
-                }
-            }
-        }.listStyle(.insetGrouped)
     }
 
     private var settings: some View {

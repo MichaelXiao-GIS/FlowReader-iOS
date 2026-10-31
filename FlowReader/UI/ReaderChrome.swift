@@ -57,7 +57,9 @@ struct ReaderChrome<More: View>: View {
 
                 if contentAvailable {
                     HStack(spacing: 10) {
-                        Button(action: onPrevious) { Image(systemName: "chevron.left").frame(width: 32, height: 44) }
+                        Button(action: onPrevious) {
+                            Image(systemName: "chevron.left").frame(width: 44, height: 44).contentShape(Rectangle())
+                        }
                             .disabled(!canGoBack).accessibilityLabel("上一章").accessibilityIdentifier("reader-previous-chapter")
                         VStack(spacing: 3) {
                             Text(progressDescription).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -69,7 +71,9 @@ struct ReaderChrome<More: View>: View {
                                 .accessibilityValue(progressDescription)
                                 .accessibilityIdentifier("reader-progress")
                         }
-                        Button(action: onNext) { Image(systemName: "chevron.right").frame(width: 32, height: 44) }
+                        Button(action: onNext) {
+                            Image(systemName: "chevron.right").frame(width: 44, height: 44).contentShape(Rectangle())
+                        }
                             .disabled(!canGoForward).accessibilityLabel("下一章").accessibilityIdentifier("reader-next-chapter")
                     }
                     .buttonStyle(.plain).padding(.horizontal, 12)

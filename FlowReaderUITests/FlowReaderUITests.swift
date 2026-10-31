@@ -13,7 +13,94 @@ final class FlowReaderUITests: XCTestCase {
         if name.contains("testImmersiveCurlAndLandscapeSpread") || name.contains("testBooksControlsBookmarksAndProgress") || name.contains("testHomeAndColdLaunchRestoreReading") { app.launchArguments.append("--long-reader-fixture") }
         if name.contains("testOfflineWalletAndSingleChapterConfirmation") { app.launchArguments.append("--chapter-purchase-fixture") }
         if name.contains("testRecommendationsUseThreeColumnsAndScrollVertically") { app.launchArguments.append("--discover-grid-fixture") }
+        if name.contains("testLongContentsLocateReverseAndKeepNaturalChapterNavigation") { app.launchArguments.append("--long-catalog-fixture") }
         app.launch()
+    }
+
+    func testLongContentsLocateReverseAndKeepNaturalChapterNavigation() throws {
+        // All IDs are negative and all visited text is pre-cached original fixture content.
+        // No scrolling is used to find the initial chapter, the latest chapter or the locate target.
+        let book = app.buttons["book--100"]
+        XCTAssertTrue(book.waitForExistence(timeout: 15))
+        book.tap()
+        let start = app.buttons["start-reading"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        XCTAssertEqual(start.label, "继续阅读")
+        start.tap()
+        assertLongCatalogChapter(876)
+        toggleReaderTools()
+        app.buttons["reader-contents"].tap()
+
+        let order = app.segmentedControls["reader-contents-order"]
+        XCTAssertTrue(order.waitForExistence(timeout: 5))
+        XCTAssertTrue(order.buttons["正序"].isSelected)
+        assertVisibleWithoutScrolling(longCatalogRow(876), message: "打开1200章目录应自动定位第876章，无须手动滚动")
+        XCTAssertTrue(longCatalogRow(876).isSelected, "当前章节应向辅助功能明确标记为正在阅读")
+        capture("41-长目录自动定位当前")
+
+        order.buttons["倒序"].tap()
+        assertVisibleWithoutScrolling(longCatalogRow(1_200), message: "切换倒序应直接显示最新第1200章")
+        assertVisibleWithoutScrolling(longCatalogRow(1_199), message: "倒序应保留相邻章节顺序")
+        XCTAssertLessThan(longCatalogRow(1_200).frame.minY, longCatalogRow(1_199).frame.minY)
+        capture("42-倒序最新章在顶")
+
+        // Reversing back must target the original first chapter, not an inferred numeric ID order.
+        order.buttons["正序"].tap()
+        assertVisibleWithoutScrolling(longCatalogRow(1), message: "切回正序应显示原目录第一章")
+        order.buttons["倒序"].tap()
+        assertVisibleWithoutScrolling(longCatalogRow(1_200), message: "再次倒序仍应回到最新章")
+        app.buttons["reader-contents-locate"].tap()
+        assertVisibleWithoutScrolling(longCatalogRow(876), message: "定位按钮应从最新章直接回当前章")
+        assertVisibleWithoutScrolling(longCatalogRow(877), message: "当前章前一行应显示下一卷首章")
+        XCTAssertLessThan(longCatalogRow(877).frame.minY, longCatalogRow(876).frame.minY,
+                          "倒序必须同时反转卷序与卷内顺序：卷6第877章在卷5第876章上方")
+        capture("43-倒序跨卷定位")
+
+        app.buttons["reader-contents-done"].tap()
+        XCTAssertTrue(order.waitForNonExistence(timeout: 5))
+        app.buttons["reader-contents"].tap()
+        XCTAssertTrue(order.waitForExistence(timeout: 5))
+        XCTAssertTrue(order.buttons["倒序"].isSelected, "关闭再打开目录应保留选择的排列方式")
+        assertVisibleWithoutScrolling(longCatalogRow(876), message: "重新打开目录仍定位当前章，不跳回倒序顶端")
+        longCatalogRow(877).tap()
+        assertLongCatalogChapter(877)
+
+        // Presentation order must never replace the canonical chapter sequence used by the reader.
+        toggleReaderTools()
+        app.buttons["reader-next-chapter"].tap()
+        assertLongCatalogChapter(878)
+        toggleReaderTools()
+        app.buttons["reader-previous-chapter"].tap()
+        assertLongCatalogChapter(877)
+        toggleReaderTools()
+        app.buttons["reader-previous-chapter"].tap()
+        assertLongCatalogChapter(876)
+
+        toggleReaderTools()
+        app.buttons["reader-close"].tap()
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        start.tap()
+        assertLongCatalogChapter(876)
+        toggleReaderTools()
+        app.buttons["reader-contents"].tap()
+        XCTAssertTrue(order.waitForExistence(timeout: 5))
+        XCTAssertTrue(order.buttons["倒序"].isSelected, "重建阅读器后仍记住目录排序")
+        assertVisibleWithoutScrolling(longCatalogRow(876), message: "重建阅读器后目录仍自动定位保存的阅读章节")
+    }
+
+    private func longCatalogRow(_ number: Int) -> XCUIElement {
+        let id = -20_000 - ((number - 1) * 53 % 1_200)
+        return app.buttons["reader-chapter-\(id)"]
+    }
+
+    private func assertLongCatalogChapter(_ number: Int, file: StaticString = #filePath, line: UInt = #line) {
+        let paragraph = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "这是长目录离线样书的第\(number)章。")).firstMatch
+        XCTAssertTrue(paragraph.waitForExistence(timeout: 10), "应读取本机第\(number)章正文", file: file, line: line)
+    }
+
+    private func assertVisibleWithoutScrolling(_ element: XCUIElement, message: String, file: StaticString = #filePath, line: UInt = #line) {
+        let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in element.exists && element.isHittable }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed, message, file: file, line: line)
     }
 
     func testRecommendationsUseThreeColumnsAndScrollVertically() throws {
