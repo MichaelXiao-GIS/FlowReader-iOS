@@ -1,28 +1,40 @@
 import Foundation
+import CoreFoundation
 import CryptoKit
 import Vision
 
 /// Native SFACG client. Protocol endpoints informed by SFNovel-ReaderProject (GPL-3.0).
-/// Public metadata uses an anonymous App request. Account content uses only Web cookies.
+/// Public metadata uses anonymous App requests; Web and App account sessions stay isolated.
 actor SFAPI {
-    static let shared = SFAPI()
+    static let shared: SFAPI = {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--uitesting") { return SFAPI(loadPersistedSessions: false) }
+        #endif
+        return SFAPI()
+    }()
     private let session: URLSession
+    private let persistsSessions: Bool
     private var webSession: WebSession?
     private var appSession: WebSession?
+    private var identityGeneration = UUID()
+    private var readableChapters: [Int: (bookID: Int, generation: UUID)] = [:]
     private var deviceChannel = UserDefaults.standard.string(forKey: "sf.deviceChannel") ?? "VIVO"
     private var deviceOAID = UserDefaults.standard.string(forKey: "sf.deviceOAID") ?? ""
     private let deviceID: String
     private var lastRequest = Date.distantPast
     private let webAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
 
-    init() {
+    init(loadPersistedSessions: Bool = true) {
+        persistsSessions = loadPersistedSessions
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 25
         configuration.timeoutIntervalForResource = 60
         configuration.httpShouldSetCookies = false
         session = URLSession(configuration: configuration, delegate: SFRedirectPolicy(), delegateQueue: nil)
-        if let data = SessionVault.read() { webSession = try? JSONDecoder().decode(WebSession.self, from: data) }
-        if let data = SessionVault.read(account: "sfacg-app") { appSession = try? JSONDecoder().decode(WebSession.self, from: data) }
+        if loadPersistedSessions {
+            if let data = SessionVault.read() { webSession = try? JSONDecoder().decode(WebSession.self, from: data) }
+            if let data = SessionVault.read(account: "sfacg-app") { appSession = try? JSONDecoder().decode(WebSession.self, from: data) }
+        }
         if let saved = UserDefaults.standard.string(forKey: "sf.installationID"), UUID(uuidString: saved) != nil {
             deviceID = saved.lowercased()
         } else {
@@ -36,22 +48,41 @@ actor SFAPI {
     func hasAppSession() -> Bool { appSession?.isAppPresent == true }
     func hasWebSession() -> Bool { webSession?.isPresent == true }
 
+    /// Changes whenever either independent account session changes, including a failed replacement.
+    func sessionGeneration() -> UUID { identityGeneration }
+
+    func recordReadableChapter(_ chapter: Chapter, generation: UUID) {
+        guard generation == identityGeneration else { return }
+        readableChapters[chapter.id] = (chapter.bookID, generation)
+    }
+
+    func verifiedReadableChapterStates(bookID: Int, generation: UUID) -> [Int: ChapterPurchaseState] {
+        readableChapters.filter { $0.value.bookID == bookID && $0.value.generation == generation }
+            .mapValues { _ in ChapterPurchaseState.available }
+    }
+
     func importWebCookies(_ cookies: [HTTPCookie]) async throws -> AccountProfile {
         let candidate = WebSession(cookies: cookies)
         guard candidate.isPresent else { throw SFAPIError.loginRequired }
         let previous = webSession
         webSession = candidate
+        identityGeneration = UUID()
         do {
             let account = try await profile()
-            try SessionVault.write(JSONEncoder().encode(candidate))
+            if persistsSessions { try SessionVault.write(JSONEncoder().encode(candidate)) }
+            identityGeneration = UUID()
             return account
         } catch {
             webSession = previous
+            identityGeneration = UUID()
             throw error
         }
     }
 
-    func logout() { webSession = nil; appSession = nil; SessionVault.clear(); SessionVault.clear(account: "sfacg-app") }
+    func logout() {
+        webSession = nil; appSession = nil; identityGeneration = UUID()
+        if persistsSessions { SessionVault.clear(); SessionVault.clear(account: "sfacg-app") }
+    }
 
     func search(query: String, page: Int = 0) async throws -> [Book] {
         let clean = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -100,28 +131,6 @@ actor SFAPI {
         return ChapterContent(chapter: chapter, text: text)
     }
 
-    /// The server decides whether a session owns the chapter. No purchase is issued.
-    private func vipContent(chapter: Chapter) async throws -> ChapterContent {
-        guard webSession?.isPresent == true else { throw SFAPIError.server("请先使用官方网页登录，再读取已订阅章节。") }
-        let url = try Self.url("https://book.sfacg.com/ajax/ashx/common.ashx", query: ["op": "getChapPic", "tp": "true", "quick": "true", "cid": String(chapter.id), "nid": String(chapter.bookID), "font": "18", "lang": "", "w": "728"])
-        var request = webRequest(url: url, referer: chapter.officialURL)
-        request.setValue("XMLHttpRequest", forHTTPHeaderField: "X-Requested-With")
-        request.setValue("image/*", forHTTPHeaderField: "Accept")
-        let (data, response) = try await send(request)
-        guard response.mimeType?.hasPrefix("image/") == true, data.count > 512 else { throw SFAPIError.subscriptionRequired }
-        let fingerprint = Insecure.MD5.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        guard fingerprint != "412cee872b67ea5d6370e859686589c4" else { throw SFAPIError.subscriptionRequired }
-        let recognition = VNRecognizeTextRequest()
-        recognition.recognitionLevel = .accurate
-        recognition.recognitionLanguages = ["zh-Hans", "zh-Hant", "en-US"]
-        recognition.usesLanguageCorrection = true
-        try VNImageRequestHandler(data: data).perform([recognition])
-        let text = (recognition.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
-        guard !text.isEmpty else { throw SFAPIError.emptyContent }
-        if text.count < 500 && ["请先订阅", "订阅后", "订阅本章", "点击订阅", "请先登录", "购买本章", "尚未订阅"].contains(where: text.contains) { throw SFAPIError.subscriptionRequired }
-        return ChapterContent(chapter: chapter, text: text)
-    }
-
     func profile() async throws -> AccountProfile {
         if webSession?.isPresent != true, hasAppSession() { return try await appProfile() }
         guard webSession?.isPresent == true else { throw SFAPIError.loginRequired }
@@ -137,37 +146,23 @@ actor SFAPI {
     }
 
     func bookshelf() async throws -> [Book] {
-        if webSession?.isPresent != true, hasAppSession() { return try await appBookshelf() }
+        try await bookshelfSync().books
+    }
+
+    func bookshelfSync() async throws -> BookshelfSyncResult {
+        if webSession?.isPresent != true, hasAppSession() {
+            return BookshelfSyncResult(books: try await appBookshelf(), failedSectionCount: 0)
+        }
         let account = try await profile()
-        let root = URL(string: "https://p.sfacg.com/u/\(account.accountName)/")!
-        let html = try await webText(url: URL(string: "https://p.sfacg.com/u/content/\(account.accountName)-0-1")!, referer: root)
-        var pockets: [(Int, String)] = []
-        for item in HTMLParser.matches("href=['\"]/p/(\\d+)/['\"][^>]*>(.*?)</a>", in: html) {
-            if let id = Int(item[1]), !pockets.contains(where: { $0.0 == id }) {
-                pockets.append((id, HTMLParser.plainText(item[2])))
-            }
+        return try await WebBookshelfLoader.load(accountName: account.accountName, publicFetch: { url, referer in
+            var request = await self.webRequest(url: url, referer: referer)
+            request.setValue(nil, forHTTPHeaderField: "Cookie")
+            let (data, _) = try await self.send(request)
+            guard let text = String(data: data, encoding: .utf8) else { throw SFAPIError.invalidResponse }
+            return text
+        }) { url, referer in
+            try await self.webText(url: url, referer: referer)
         }
-        var result: [Book] = []
-        var seen = Set<Int>()
-        for (pocketID, title) in pockets {
-            let url = URL(string: "https://p.sfacg.com/p/\(pocketID)/")!
-            let first = try await webText(url: url, referer: root)
-            let pages = min(100, HTMLParser.matches("/p/\(pocketID)/(\\d+)/", in: first).compactMap { Int($0[1]) }.max() ?? 1)
-            for page in 1...max(1, pages) {
-                let source: String
-                if page == 1 { source = first }
-                else { source = try await webText(url: URL(string: "https://p.sfacg.com/p/\(pocketID)/\(page)/")!, referer: url) }
-                for card in HTMLParser.matches("<ul\\b[^>]*>.*?</ul>", in: source) {
-                    let markup = card[0]
-                    guard let idString = HTMLParser.first("(?:https?:)?//book\\.sfacg\\.com/Novel/(\\d+)/", in: markup), let id = Int(idString), seen.insert(id).inserted else { continue }
-                    guard let name = HTMLParser.first("<b>\\s*<a\\b[^>]*>(.*?)</a>", in: markup) else { continue }
-                    let author = HTMLParser.first("作者[：:]\\s*(.*?)(?:</li>|<br|</div>)", in: markup).map(HTMLParser.plainText) ?? "未知作者"
-                    let cover = HTMLParser.first("<img\\b[^>]*src=['\"]([^'\"]+)", in: markup).flatMap(Self.remoteURL)
-                    result.append(Book(id: id, title: HTMLParser.plainText(name), author: author, coverURL: cover, shelfName: title))
-                }
-            }
-        }
-        return result
     }
 
     func audioTracks(bookID: Int) async throws -> [AudioTrack] {
@@ -235,17 +230,22 @@ actor SFAPI {
         guard candidate.isAppPresent else { throw SFAPIError.server("登录未返回有效会话，请在官方客户端完成账号验证后重试。") }
         let previous = appSession
         appSession = candidate
+        identityGeneration = UUID()
         do {
             let account = try await appProfile()
             _ = try await appData(path: "/user/androiddeviceinfos", body: deviceBody(accountID: account.id, full: false), includeSession: true)
             _ = try await appData(path: "/user/androiddeviceinfos/conversions", body: conversionBody(), includeSession: true)
-            try SessionVault.write(JSONEncoder().encode(candidate), account: "sfacg-app")
+            if persistsSessions { try SessionVault.write(JSONEncoder().encode(candidate), account: "sfacg-app") }
+            identityGeneration = UUID()
             return account
         } catch {
             appSession = previous
+            identityGeneration = UUID()
             throw error
         }
     }
+
+    func accountServiceProfile() async throws -> AccountProfile { try await appProfile() }
 
     private func appProfile() async throws -> AccountProfile {
         guard hasAppSession() else { throw SFAPIError.loginRequired }
@@ -279,7 +279,7 @@ actor SFAPI {
         return body
     }
 
-    private func appRequest(path: String, query: [String: String], body: [String: Any]?, includeSession: Bool) throws -> URLRequest {
+    func appRequest(path: String, query: [String: String], body: [String: Any]?, includeSession: Bool, method: String? = nil) throws -> URLRequest {
         let url = try Self.url("https://api.sfacg.com" + path, query: query)
         var request = URLRequest(url: url)
         let authorization = Data("androiduser:1a#$51-yt69;*Acv@qxq".utf8).base64EncodedString()
@@ -290,34 +290,53 @@ actor SFAPI {
         request.setValue(try Self.securityHeader(deviceID: deviceID), forHTTPHeaderField: "SFSecurity")
         if includeSession { request.setValue(appSession?.header(for: url), forHTTPHeaderField: "Cookie") }
         if let body {
-            request.httpMethod = "POST"
+            request.httpMethod = method ?? "POST"
             request.setValue("application/json; charset=UTF-8", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
         }
+        if let method { request.httpMethod = method }
         return request
     }
 
-    private func appData(path: String, query: [String: String] = [:], body: [String: Any]? = nil, includeSession: Bool = false) async throws -> Any {
-        let request = try appRequest(path: path, query: query, body: body, includeSession: includeSession)
+    func appData(path: String, query: [String: String] = [:], body: [String: Any]? = nil, includeSession: Bool = false, method: String? = nil) async throws -> Any {
+        let request = try appRequest(path: path, query: query, body: body, includeSession: includeSession, method: method)
         let (data, response) = try await send(request, acceptServerErrors: true)
         return try Self.parseAppResponse(data, response: response)
     }
 
     static func parseAppResponse(_ data: Data, response: HTTPURLResponse) throws -> Any {
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { throw SFAPIError.invalidResponse }
-        let status = root["status"] as? [String: Any] ?? [:]
-        let code = Self.integer(status["httpCode"]) ?? response.statusCode
-        guard (200..<300).contains(code), (200..<300).contains(response.statusCode) else {
-            if let message = status["msg"] as? String, !message.isEmpty { throw SFAPIError.server(message) }
-            let failedCode = (200..<300).contains(response.statusCode) ? code : response.statusCode
-            if failedCode == 401 || failedCode == 403 { throw SFAPIError.loginRequired }
+        guard let status = root["status"] as? [String: Any] else { throw SFAPIError.invalidResponse }
+        let code = responseCode(status["httpCode"])
+        let errorCode = responseCode(status["errorCode"])
+        let message = (status["msg"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = message.flatMap { $0.isEmpty ? nil : $0 }
+        let transportFailed = !(200..<300).contains(response.statusCode)
+        let apiFailed = code.map { !(200..<300).contains($0) } ?? false
+        // Live anonymous responses use 200. Zero and null are compatible no-error values.
+        let businessFailed = errorCode.map { $0 != 0 && $0 != 200 } ?? false
+        if transportFailed || apiFailed || businessFailed {
+            let failedCode = transportFailed ? response.statusCode : apiFailed ? code! : errorCode!
+            if failedCode == 401 || failedCode == 403 || errorCode == 502 {
+                throw SFAPIError.authenticationRequired(detail ?? "请重新连接菠萝包账号服务。")
+            }
+            if let detail { throw SFAPIError.server(detail) }
             if failedCode == 429 { throw SFAPIError.server("请求较频繁，请稍后再试。") }
             throw SFAPIError.server("菠萝包服务暂时不可用（\(failedCode)）。")
         }
+        // An arbitrary HTTP 200 JSON object must never confirm a mutating account action.
+        guard let code, (200..<300).contains(code) else { throw SFAPIError.invalidResponse }
+        if let raw = status["errorCode"], !(raw is NSNull), errorCode == nil { throw SFAPIError.invalidResponse }
         return root["data"] ?? root
     }
 
-    private func webRequest(url: URL, referer: URL? = nil) -> URLRequest {
+    private static func responseCode(_ value: Any?) -> Int? {
+        if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() { return Int(exactly: number.doubleValue) }
+        if let string = value as? String { return Int(string) }
+        return nil
+    }
+
+    func webRequest(url: URL, referer: URL? = nil) -> URLRequest {
         var request = URLRequest(url: url)
         request.setValue(webAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("zh-CN,zh;q=0.9", forHTTPHeaderField: "Accept-Language")
@@ -327,38 +346,40 @@ actor SFAPI {
         return request
     }
 
-    private func webText(url: URL, referer: URL? = nil) async throws -> String {
+    func webText(url: URL, referer: URL? = nil) async throws -> String {
         let (data, _) = try await send(webRequest(url: url, referer: referer))
         guard let text = String(data: data, encoding: .utf8) else { throw SFAPIError.invalidResponse }
         return text
     }
 
-    private func send(_ request: URLRequest, acceptServerErrors: Bool = false) async throws -> (Data, HTTPURLResponse) {
+    func send(_ request: URLRequest, acceptServerErrors: Bool = false, expectedGeneration: UUID? = nil) async throws -> (Data, HTTPURLResponse) {
         try Task.checkCancellation()
         let now = Date()
         let wait = max(0, lastRequest.timeIntervalSince(now) + 0.3)
         // Reserve before awaiting to keep concurrent actor callers spaced apart.
         lastRequest = now.addingTimeInterval(wait)
         if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+        if let expectedGeneration, expectedGeneration != identityGeneration { throw CancellationError() }
         let (data, response) = try await session.data(for: request)
+        if let expectedGeneration, expectedGeneration != identityGeneration { throw CancellationError() }
         guard let http = response as? HTTPURLResponse else { throw SFAPIError.invalidResponse }
         if acceptServerErrors { return (data, http) }
         switch http.statusCode {
         case 200..<300: return (data, http)
         case 401, 403: throw SFAPIError.loginRequired
         case 429: throw SFAPIError.server("请求较频繁，请稍后再试。")
-        default: throw SFAPIError.server("菠萝包服务暂时不可用（\(http.statusCode)）。")
+        default: throw SFAPIError.httpStatus(http.statusCode)
         }
     }
 
-    private static func url(_ base: String, query: [String: String]) throws -> URL {
+    static func url(_ base: String, query: [String: String]) throws -> URL {
         guard var parts = URLComponents(string: base) else { throw SFAPIError.invalidResponse }
         if !query.isEmpty { parts.queryItems = query.sorted(by: { $0.key < $1.key }).map { URLQueryItem(name: $0.key, value: $0.value) } }
         guard let url = parts.url else { throw SFAPIError.invalidResponse }
         return url
     }
 
-    private static func integer(_ value: Any?) -> Int? {
+    static func integer(_ value: Any?) -> Int? {
         if let number = value as? NSNumber { return number.intValue }
         if let text = value as? String { return Int(text) }
         return nil

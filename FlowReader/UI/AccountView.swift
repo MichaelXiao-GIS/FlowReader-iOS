@@ -2,59 +2,57 @@ import SwiftUI
 import WebKit
 
 struct AccountView: View {
+    private enum Destination: Hashable { case benefits }
+    @Environment(CloudLibraryStore.self) private var cloud
     @AppStorage("appearance") private var appearance = "system"
-    @State private var profile: AccountProfile?
-    @State private var shelf: [Book] = []
-    @State private var loading = false
-    @State private var error: String?
     @State private var showLogin = false
     @State private var showLogout = false
     @State private var showAbout = false
     @State private var showAppLogin = false
-    @State private var appConnected = false
-    @State private var webConnected = false
 
     var body: some View {
         List {
             Section {
                 HStack(spacing: 16) {
-                    Image(systemName: profile == nil ? "person.crop.circle" : "person.crop.circle.fill")
+                    Image(systemName: cloud.account == nil ? "person.crop.circle" : "person.crop.circle.fill")
                         .font(.system(size: 48, weight: .ultraLight)).foregroundStyle(FlowTheme.accent)
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(profile?.name ?? "你的阅读空间").font(.title3.weight(.semibold))
-                        Text(profile == nil ? "登录菠萝包，连接账号书架" : "已连接菠萝包账号")
+                        Text(cloud.account?.name ?? "你的阅读空间").font(.title3.weight(.semibold))
+                        Text(cloud.isConnected ? "已连接菠萝包账号" : "登录菠萝包，连接云端书架")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }.padding(.vertical, 10)
-                if !webConnected {
-                    Button(profile == nil ? "登录菠萝包" : "连接官方网页账号") { showLogin = true }
+                if !cloud.webConnected || cloud.webNeedsLogin {
+                    Button(cloud.webNeedsLogin ? "重新连接网页账号" : cloud.account == nil ? "登录菠萝包" : "连接官方网页账号") { showLogin = true }
                         .accessibilityIdentifier("official-login")
                 } else {
                     Label("网页账号已连接", systemImage: "checkmark.circle").foregroundStyle(FlowTheme.accent)
                 }
+            } footer: {
+                Text("云端收藏与继续阅读已整合到“书库”。")
             }
-            if let error {
-                Section { Text(error).font(.subheadline).foregroundStyle(.secondary) }
-            }
-            if profile != nil {
-                Section {
-                    if loading { ProgressView("正在同步书架") }
-                    else if shelf.isEmpty {
-                        Text("书架还没有作品").foregroundStyle(.secondary)
-                    }
-                    ForEach(shelf) { book in
-                        NavigationLink(value: book) { BookRow(book: book) }
-                    }
-                } header: {
-                    HStack { Text("账号书架"); Spacer(); Text("\(shelf.count)") }
+            if let error = cloud.accountError {
+                Section("账号信息") {
+                    Text(error).font(.subheadline).foregroundStyle(.secondary)
+                    Button("重试读取账号") { Task { await cloud.refreshAccount() } }
+                        .disabled(cloud.accountLoading)
                 }
             }
-            Section("有声服务") {
-                if appConnected {
-                    Label("已连接", systemImage: "checkmark.circle").foregroundStyle(FlowTheme.accent)
+            Section("会员与签到") {
+                NavigationLink(value: Destination.benefits) {
+                    Label("会员信息与每日签到", systemImage: "checkmark.seal")
+                }
+                .accessibilityIdentifier("account-benefits")
+            }
+            Section {
+                if cloud.appConnected {
+                    Label("账号服务已连接", systemImage: "checkmark.circle").foregroundStyle(FlowTheme.accent)
                 } else {
-                    Button("连接有声服务") { showAppLogin = true }
+                    Button("连接账号服务") { showAppLogin = true }
                 }
+            } header: { Text("账号服务") }
+            footer: {
+                Text("网页登录用于书架、VIP 等级与文字阅读；账号服务还支持签到与有声。两种连接分别保存。")
             }
             Section("偏好设置") {
                 Picker("外观", selection: $appearance) {
@@ -64,7 +62,7 @@ struct AccountView: View {
                 }
                 Button("关于菠萝阅") { showAbout = true }.foregroundStyle(.primary)
             }
-            if profile != nil {
+            if cloud.isConnected {
                 Section {
                     Button("退出登录", role: .destructive) { showLogout = true }
                 }
@@ -73,43 +71,28 @@ struct AccountView: View {
         .scrollContentBackground(.hidden)
         .background(FlowTheme.paper)
         .navigationTitle("我的")
-        .navigationDestination(for: Book.self) { book in BookDetailView(book: book) }
+        .navigationDestination(for: Destination.self) { _ in AccountBenefitsView() }
         .accessibilityIdentifier("account-content")
-        .refreshable { await refresh() }
-        .task { await refresh() }
-        .sheet(isPresented: $showLogin, onDismiss: { Task { await refresh() } }) { WebLoginView() }
+        .refreshable { await cloud.refreshAccount() }
+        .task { await cloud.refreshAccount() }
+        .sheet(isPresented: $showLogin, onDismiss: { Task { await cloud.refreshAccount() } }) { WebLoginView() }
         .sheet(isPresented: $showAbout) { AboutView() }
-        .sheet(isPresented: $showAppLogin, onDismiss: { Task { await refresh() } }) { AppLoginView() }
+        .sheet(isPresented: $showAppLogin, onDismiss: { Task { await cloud.refreshAccount() } }) { AccountServiceLoginView() }
         .confirmationDialog("退出后将清除本机登录信息，下载的作品会保留。", isPresented: $showLogout, titleVisibility: .visible) {
             Button("退出登录", role: .destructive) {
                 Task {
+                    cloud.reset()
                     await SFAPI.shared.logout()
-                    profile = nil
-                    shelf = []
-                    error = nil
-                    appConnected = false
-                    webConnected = false
+                    await cloud.refreshAccount()
                 }
             }
         }
     }
-
-    @MainActor private func refresh() async {
-        appConnected = await SFAPI.shared.hasAppSession()
-        webConnected = await SFAPI.shared.hasWebSession()
-        guard await SFAPI.shared.hasSession() else { profile = nil; shelf = []; return }
-        loading = true
-        error = nil
-        do {
-            profile = try await SFAPI.shared.profile()
-            shelf = try await SFAPI.shared.bookshelf()
-        } catch { self.error = error.localizedDescription }
-        loading = false
-    }
 }
 
-private struct AppLoginView: View {
+struct AccountServiceLoginView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(CloudLibraryStore.self) private var cloud
     @State private var username = ""
     @State private var password = ""
     @State private var connecting = false
@@ -124,7 +107,7 @@ private struct AppLoginView: View {
                         .autocorrectionDisabled()
                     SecureField("密码", text: $password).textContentType(.password)
                 } footer: {
-                    Text("有声播放需要 App 会话。登录可能需要在官方客户端完成验证。密码不会保存。")
+                    Text("连接后可读取会员信息、每日签到与播放有声作品。此连接与网页登录分别保存；请确认使用的账号。登录可能需要在官方客户端完成验证，密码不会保存。")
                 }
                 if let error {
                     Section { Text(error).font(.subheadline).foregroundStyle(.red) }
@@ -138,7 +121,7 @@ private struct AppLoginView: View {
                     .disabled(connecting || username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || password.isEmpty)
                 }
             }
-            .navigationTitle("连接有声服务")
+            .navigationTitle("连接账号服务")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() }.disabled(connecting) } }
         }
@@ -154,6 +137,7 @@ private struct AppLoginView: View {
         password = ""
         do {
             _ = try await SFAPI.shared.loginApp(username: username.trimmingCharacters(in: .whitespacesAndNewlines), password: submittedPassword)
+            await cloud.checkSessionGeneration()
             dismiss()
         } catch { self.error = error.localizedDescription }
         connecting = false
@@ -195,6 +179,7 @@ private struct AboutView: View {
 
 struct WebLoginView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(CloudLibraryStore.self) private var cloud
     @State private var controller = LoginWebController()
     @State private var finishing = false
     @State private var error: String?
@@ -234,6 +219,7 @@ struct WebLoginView: View {
         let cookies = await controller.webView.configuration.websiteDataStore.httpCookieStore.allCookies()
         do {
             _ = try await SFAPI.shared.importWebCookies(cookies)
+            await cloud.checkSessionGeneration()
             dismiss()
         } catch { self.error = error.localizedDescription }
         finishing = false

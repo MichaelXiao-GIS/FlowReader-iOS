@@ -4,8 +4,10 @@ struct ReaderView: View {
     let book: Book
     let chapters: [Chapter]
     @Environment(LibraryStore.self) private var library
+    @Environment(CloudLibraryStore.self) private var cloud
     @Environment(\.horizontalSizeClass) private var sizeClass
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selected: Chapter
     @State private var content: ChapterContent?
@@ -16,6 +18,9 @@ struct ReaderView: View {
     @State private var showChrome = true
     @State private var visibleParagraph: Int?
     @State private var shouldContinueSpeaking = false
+    @State private var progressGeneration: UUID?
+    @State private var cloudProgressMessage: String?
+    @State private var cloudProgressFailed = false
     @ScaledMetric(relativeTo: .body) private var textScale = 1.0
     @AppStorage("reader.fontSize") private var fontSize = 21.0
     @AppStorage("reader.lineSpacing") private var lineSpacing = 10.0
@@ -40,6 +45,7 @@ struct ReaderView: View {
         }
     }
     private var foreground: Color { theme == "night" || colorScheme == .dark ? Color(white: 0.88) : Color(red: 0.18, green: 0.16, blue: 0.13) }
+    private var chapterIsRemote: Bool { selected.id > 0 && book.id > 0 }
     private var chapterIndex: Int { chapters.firstIndex(where: { $0.id == selected.id }) ?? 0 }
     private var paragraphs: [String] { content?.text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } ?? [] }
 
@@ -73,6 +79,9 @@ struct ReaderView: View {
                     Label("暂时无法打开", systemImage: "book.closed")
                 } description: { Text(error) } actions: {
                     Button("重试") { Task { await load() } }.buttonStyle(.borderedProminent)
+                    if chapterIsRemote {
+                        Link("在官方页面查看", destination: selected.officialURL).buttonStyle(.glass)
+                    }
                 }
             } else if content != nil {
                 ScrollView {
@@ -124,12 +133,15 @@ struct ReaderView: View {
                 Button { showContents.toggle() } label: { Image(systemName: "list.bullet") }.accessibilityLabel("章节目录").accessibilityIdentifier("reader-contents")
                 Button { showSettings = true } label: { Image(systemName: "textformat.size") }.accessibilityLabel("阅读设置").accessibilityIdentifier("reader-settings")
                 Menu {
+                    if cloudProgressFailed {
+                        Label("云端暂未同步，本机位置已保存", systemImage: "exclamationmark.icloud")
+                    }
                     Button {
                         if audio.isSpeech && audio.title == selected.title { audio.toggle() } else { speakCurrent() }
                     } label: { Label(audio.isPlaying && audio.isSpeech ? "暂停朗读" : "朗读本章", systemImage: "speaker.wave.2") }
                     Button { library.download(book: book, chapters: [selected]) } label: { Label("下载本章", systemImage: "arrow.down.circle") }
                     if audio.isSpeech { Button("停止朗读", systemImage: "stop.circle") { audio.stop() } }
-                } label: { Image(systemName: "ellipsis") }.accessibilityLabel("更多阅读选项")
+                } label: { Image(systemName: cloudProgressFailed ? "exclamationmark.icloud" : "ellipsis") }.accessibilityLabel(cloudProgressFailed ? "云端进度未同步，更多阅读选项" : "更多阅读选项")
             }
             if showChrome {
                 ToolbarItemGroup(placement: .bottomBar) {
@@ -158,8 +170,10 @@ struct ReaderView: View {
                                 Text(chapter.title).foregroundStyle(chapter.id == selected.id ? FlowTheme.accent : .primary)
                                 Spacer()
                                 if library.localBook(id: book.id)?.downloadedIDs.contains(chapter.id) == true {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.secondary).font(.caption)
-                                } else if chapter.isVIP { Image(systemName: "lock").foregroundStyle(.secondary).font(.caption) }
+                                    Image(systemName: "arrow.down.circle.fill").foregroundStyle(.secondary).font(.caption)
+                                        .accessibilityLabel("已下载")
+                                }
+                                ChapterPurchaseBadge(chapter: chapter)
                                 if chapter.id == selected.id { Image(systemName: "speaker.wave.2.fill").foregroundStyle(FlowTheme.accent).font(.caption) }
                             }.padding(.vertical, 5)
                         }.accessibilityIdentifier("reader-chapter-\(chapter.id)").listRowBackground(chapter.id == selected.id ? FlowTheme.accent.opacity(0.07) : Color.clear)
@@ -200,6 +214,20 @@ struct ReaderView: View {
                         Text("60 分钟").tag(60)
                     }
                 }
+                Section("阅读位置") {
+                    Text(cloudProgressMessage ?? "段落位置已保存在本机。")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                    if chapterIsRemote {
+                        Text("云端同步到章节，段落位置由本机保存。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    if cloudProgressFailed {
+                        Button("重试同步本章") {
+                            guard let generation = progressGeneration else { return }
+                            Task { await synchronizeProgress(chapter: selected, generation: generation) }
+                        }
+                    }
+                }
             }
             .navigationTitle("阅读设置").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("完成") { showSettings = false }.accessibilityIdentifier("reader-settings-done") } }
@@ -208,10 +236,16 @@ struct ReaderView: View {
 
     @MainActor private func load() async {
         loading = true; error = nil; content = nil
+        cloudProgressMessage = nil; cloudProgressFailed = false
         let target = selected
+        let generation = await SFAPI.shared.sessionGeneration()
+        progressGeneration = generation
         let saved = library.localBook(id: book.id)?.progress
         do {
             let loaded = try await library.content(chapter: target)
+            try Task.checkCancellation()
+            guard selected.id == target.id else { return }
+            await cloud.applyChapterAccess(loaded.chapter)
             try Task.checkCancellation()
             guard selected.id == target.id else { return }
             content = loaded
@@ -220,8 +254,33 @@ struct ReaderView: View {
             visibleParagraph = restoredParagraph > 0 ? restoredParagraph : nil
             library.recordProgress(book: book, chapters: chapters, chapterID: target.id, paragraph: visibleParagraph ?? 0)
             if shouldContinueSpeaking { shouldContinueSpeaking = false; speakCurrent() }
+            guard target.id > 0, book.id > 0 else { return }
+            // Opening a chapter intentionally starts a new reading position. Restoring a library,
+            // downloading content, and scrolling never submit previously saved history.
+            try await Task.sleep(for: .seconds(3))
+            guard selected.id == target.id, content?.chapter.id == target.id, scenePhase == .active else { return }
+            await synchronizeProgress(chapter: target, generation: generation)
         } catch is CancellationError { }
-        catch { self.error = error.localizedDescription; loading = false; shouldContinueSpeaking = false }
+        catch {
+            guard !Task.isCancelled, selected.id == target.id else { return }
+            self.error = error.localizedDescription; loading = false; shouldContinueSpeaking = false
+        }
+    }
+    @MainActor private func synchronizeProgress(chapter: Chapter, generation: UUID) async {
+        guard !Task.isCancelled, selected.id == chapter.id, content?.chapter.id == chapter.id else { return }
+        do {
+            let recorded = try await cloud.recordOpenedChapter(book: book, chapter: chapter, expectedGeneration: generation)
+            guard !Task.isCancelled, selected.id == chapter.id else { return }
+            if recorded {
+                cloudProgressMessage = "本章已同步到云端。"
+                cloudProgressFailed = false
+            }
+        } catch {
+            guard !Task.isCancelled, !(error is CancellationError), selected.id == chapter.id,
+                  await SFAPI.shared.sessionGeneration() == generation else { return }
+            cloudProgressMessage = "本机位置已保存，云端暂未同步：\(error.localizedDescription)"
+            cloudProgressFailed = true
+        }
     }
     private func select(_ chapter: Chapter) {
         saveProgress()

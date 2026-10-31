@@ -8,12 +8,15 @@
 
 ## 安装
 
-从 [Releases](https://github.com/MichaelXiao-GIS/FlowReader-iOS/releases) 下载 `FlowReader-1.0.0-unsigned.ipa`。这是 **arm64 真机未签名 IPA**，需自行用个人 Apple 开发签名或现有侧载工具重新签名安装；它不含开发者证书、描述文件或 Apple 账号。
+从 [Releases](https://github.com/MichaelXiao-GIS/FlowReader-iOS/releases) 下载 `FlowReader-1.0.1-unsigned.ipa`。这是 **arm64 真机未签名 IPA**，需自行用个人 Apple 开发签名或现有侧载工具重新签名安装；它不含开发者证书、描述文件或 Apple 账号。
 
 ## 功能
 
 - 在线搜索、推荐、书籍详情、分卷目录和免费章节阅读。
-- 官方网页登录、账号书架；可选独立 App 会话连接有声服务。密码只用于当次登录，不持久化；会话隔离保存在系统钥匙串。
+- 一级“书库”整合云端书架与本机书籍，支持搜索、分类筛选与继续阅读；单个收藏分类失败时保留已读取作品，并提示未完成的同步。
+- 云端章节进度读取与同步；不同的云端位置可主动选择继续阅读，同一章保留本机段落位置。
+- 新旧 VIP 等级查询；已订阅 VIP 章节通过官方网页授权读取。可选独立账号服务支持手动每日签到与有声播放，明确展示实际连接账号。
+- 密码只用于当次登录，不持久化；网页与 App 会话隔离保存在系统钥匙串。
 - 章节选择下载，暂停、恢复、取消；重启后未完成任务暂停，避免自动继续请求。
 - 本地书库、TXT / GB18030 导入、阅读进度恢复、字号、行距、字体与主题设置。
 - 系统语音朗读、连续章节、有声音轨播放、睡眠定时、锁屏控制、单集离线下载和音频分享。
@@ -31,8 +34,10 @@
 # 运行测试；替换为自己的模拟器名称
 xcodebuild -project FlowReader.xcodeproj -scheme FlowReader \
   -destination 'platform=iOS Simulator,name=iPhone 18 Pro' \
-  CODE_SIGNING_ALLOWED=NO test
+  CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- test
 ```
+
+模拟器测试需要本地临时签名，才能使用系统钥匙串；上面的 `CODE_SIGN_IDENTITY=-` 不需要开发者证书。发行脚本仅对待自行签名的真机 IPA 关闭签名。
 
 `scripts/generate-project.py` 可重建 Xcode 工程。工程使用文件系统同步目录，新增 Swift 文件会自动收录。`--demo` / `--uitesting` 启动参数使用明确标注的原创样书，正常启动请求真实服务。
 
@@ -40,9 +45,9 @@ xcodebuild -project FlowReader.xcodeproj -scheme FlowReader \
 
 本项目独立于 SFACG 官方，接口可能随服务端调整。已购 VIP 文字依赖官方网页会话，图片正文使用本机 Apple Vision 识别；未订阅章节提示前往官方订阅，不自动购买。有声音轨依赖 App 会话和账号权限。
 
-账号登录、已购 VIP 识别、真实授权音频及真机重新签名安装未使用个人账号完成端到端验证。漫画、EPUB 导入、翻页卷曲效果不包含在本版本；正文采用连续滚动阅读。下载应保持应用在前台，iOS 可能挂起后台网络任务。
+官方网页登录、真实账号书架与已授权 VIP 正文已在模拟器验证；图片文字识别仍可能存在个别错字。真实授权音频、App 账号签到和真机重新签名安装仍需验证。漫画、EPUB 导入、翻页卷曲效果不包含在本版本；正文采用连续滚动阅读。下载应保持应用在前台，iOS 可能挂起后台网络任务。
 
-验证结果与机型截图见 [验证说明](docs/VALIDATION.md)。
+验证结果与机型截图见 [验证说明](docs/VALIDATION.md)。APK 核对证据、接口来源与未确认的部分见 [接口兼容记录](docs/API_COMPATIBILITY.md)。
 
 ## 来源与许可
 

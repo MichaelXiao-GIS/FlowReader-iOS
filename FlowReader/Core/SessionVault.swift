@@ -26,15 +26,28 @@ enum SessionVault {
         if result == errSecItemNotFound {
             var item = query(account: account)
             attributes.forEach { item[$0.key] = $0.value }
-            guard SecItemAdd(item as CFDictionary, nil) == errSecSuccess else {
-                throw SFAPIError.server("无法安全保存登录状态，请重试。")
-            }
+            let insertion = SecItemAdd(item as CFDictionary, nil)
+            guard insertion == errSecSuccess else { throw SessionVaultError(status: insertion) }
         } else if result != errSecSuccess {
-            throw SFAPIError.server("无法安全保存登录状态，请重试。")
+            throw SessionVaultError(status: result)
         }
     }
 
     static func clear(account: String = "sfacg") { SecItemDelete(query(account: account) as CFDictionary) }
+}
+
+struct SessionVaultError: LocalizedError {
+    let status: OSStatus
+    var errorDescription: String? {
+        switch status {
+        case errSecMissingEntitlement:
+            return "当前安装包缺少安全存储权限，请重新签名安装后再登录。"
+        case errSecInteractionNotAllowed:
+            return "请解锁设备后，再尝试保存登录状态。"
+        default:
+            return "无法安全保存登录状态（\(status)），请重试。"
+        }
+    }
 }
 
 struct WebSession: Codable, Sendable {

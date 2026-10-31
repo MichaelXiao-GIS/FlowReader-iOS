@@ -2,6 +2,7 @@ import SwiftUI
 
 struct BookDetailView: View {
     @Environment(LibraryStore.self) private var library
+    @Environment(CloudLibraryStore.self) private var cloud
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State var book: Book
     @State private var chapters: [Chapter] = []
@@ -13,6 +14,13 @@ struct BookDetailView: View {
     @State private var showDownload = false
     @State private var contentKind = 0
     @State private var expandedSummary = false
+    @State private var loadRequest = UUID()
+    @State private var purchaseRequest = UUID()
+    @State private var purchaseTask: Task<Void, Never>?
+    @State private var purchaseLoading = false
+    @State private var purchaseError: String?
+    @State private var purchaseNeedsLogin = false
+    @State private var showPurchaseLogin = false
 
     private var isSaved: Bool { library.books.contains { $0.id == book.id } }
     private var readingChapter: Chapter? {
@@ -35,6 +43,7 @@ struct BookDetailView: View {
                             .font(.caption)
                     }
                 }
+                cloudReadingPosition
                 actions
                 Divider()
                 HStack {
@@ -45,7 +54,10 @@ struct BookDetailView: View {
                         Text("有声").tag(1)
                     }.pickerStyle(.segmented).frame(maxWidth: 160)
                 }
-                if contentKind == 0 { textCatalog } else { audioCatalog }
+                if contentKind == 0 {
+                    if chapters.contains(where: \.isVIP) { purchaseStatus }
+                    textCatalog
+                } else { audioCatalog }
             }
             .padding(horizontalSizeClass == .regular ? 36 : 24)
             .frame(maxWidth: 900, alignment: .leading)
@@ -67,7 +79,9 @@ struct BookDetailView: View {
         .sheet(isPresented: $showDownload) {
             ChapterDownloadSheet(book: book, chapters: chapters)
         }
-        .task { await loadBook() }
+        .sheet(isPresented: $showPurchaseLogin, onDismiss: { Task { await cloud.checkSessionGeneration(); startPurchaseRefresh() } }) { AccountServiceLoginView() }
+        .task(id: cloud.sessionGeneration) { await loadBook() }
+        .task(id: cloud.sessionGeneration) { if book.id > 0 { await cloud.loadHistoryIfNeeded() } }
         .onChange(of: contentKind) { _, kind in
             if kind == 1 && tracks.isEmpty { Task { await loadAudio() } }
         }
@@ -112,6 +126,49 @@ struct BookDetailView: View {
         }
     }
 
+    @ViewBuilder private var cloudReadingPosition: some View {
+        if let progress = cloud.readingProgress(bookID: book.id),
+           library.localBook(id: book.id)?.progress?.chapterID != progress.chapterID,
+           let chapter = chapters.first(where: { $0.id == progress.chapterID && $0.bookID == book.id }) {
+            NavigationLink(value: ReadingRoute(book: book, chapters: chapters, initialChapter: chapter)) {
+                HStack(spacing: 16) {
+                    Image(systemName: "icloud").font(.title2).foregroundStyle(FlowTheme.accent)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("从云端继续").font(.headline).foregroundStyle(.primary)
+                        Text(chapter.title).font(.subheadline).foregroundStyle(.secondary)
+                        if let date = progress.updatedAt { Text(date, style: .relative).font(.caption).foregroundStyle(.secondary) }
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                }.padding(18).background(FlowTheme.card, in: .rect(cornerRadius: 20))
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("book-cloud-continue")
+        } else if book.id > 0 && cloud.historyLoading {
+            ProgressView("正在读取云端阅读位置").font(.subheadline)
+        } else if book.id > 0, let message = cloud.historyError {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(message).font(.caption).foregroundStyle(.secondary)
+                Button("重试云端阅读位置") { Task { await cloud.refreshHistory() } }.font(.subheadline)
+            }
+        }
+    }
+
+    @ViewBuilder private var purchaseStatus: some View {
+        if purchaseLoading {
+            HStack(spacing: 8) { ProgressView().controlSize(.small); Text("正在确认购买状态").font(.caption).foregroundStyle(.secondary) }
+        } else if let purchaseError {
+            HStack(alignment: .top, spacing: 14) {
+                Text(purchaseError).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+                if purchaseNeedsLogin {
+                    Button("连接") { showPurchaseLogin = true }.font(.caption)
+                } else {
+                    Button("重试") { startPurchaseRefresh() }.font(.caption)
+                }
+            }
+            .accessibilityIdentifier("chapter-purchase-status")
+        }
+    }
+
     @ViewBuilder private var textCatalog: some View {
         if loading {
             ProgressView("正在加载目录").frame(maxWidth: .infinity).padding(36)
@@ -132,11 +189,7 @@ struct BookDetailView: View {
                                 Text(chapter.title).font(.subheadline).foregroundStyle(.primary)
                                     .multilineTextAlignment(.leading)
                                 Spacer(minLength: 8)
-                                if chapter.isVIP {
-                                    Image(systemName: chapter.isOwned ? "checkmark.seal" : "lock")
-                                        .font(.caption).foregroundStyle(.tertiary)
-                                        .accessibilityLabel(chapter.isOwned ? "已购买" : "付费章节")
-                                }
+                                ChapterPurchaseBadge(chapter: chapter)
                                 Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
                             }
                             .padding(.vertical, 15)
@@ -167,7 +220,7 @@ struct BookDetailView: View {
                             Image(systemName: "play.circle").font(.title3).foregroundStyle(FlowTheme.accent)
                             Text(track.title).font(.subheadline).foregroundStyle(.primary)
                             Spacer()
-                            if track.isVIP { Image(systemName: "lock").font(.caption).foregroundStyle(.tertiary) }
+                            if track.isVIP { Text("VIP").font(.caption2.weight(.medium)).foregroundStyle(.secondary).accessibilityLabel("付费音轨") }
                         }.padding(.vertical, 15)
                     }.buttonStyle(.plain)
                     Divider().opacity(0.5)
@@ -177,6 +230,12 @@ struct BookDetailView: View {
     }
 
     @MainActor private func loadBook() async {
+        let request = UUID()
+        loadRequest = request
+        purchaseTask?.cancel()
+        purchaseRequest = UUID()
+        purchaseLoading = false
+        purchaseError = nil
         if book.id < 0, let local = library.localBook(id: book.id) {
             chapters = local.chapters
             loading = false
@@ -189,10 +248,58 @@ struct BookDetailView: View {
             async let detail = SFAPI.shared.detail(bookID: book.id)
             async let catalog = SFAPI.shared.chapters(bookID: book.id)
             let (updated, result) = try await (detail, catalog)
+            guard loadRequest == request, !Task.isCancelled else { return }
             book = updated
             chapters = result
-        } catch { self.error = chapters.isEmpty ? error.localizedDescription : nil }
+        } catch {
+            guard loadRequest == request, !Task.isCancelled else { return }
+            self.error = chapters.isEmpty ? error.localizedDescription : nil
+        }
         loading = false
+        startPurchaseRefresh()
+    }
+
+    @MainActor private func startPurchaseRefresh() {
+        purchaseTask?.cancel()
+        let request = UUID()
+        purchaseRequest = request
+        let catalogRequest = loadRequest
+        guard book.id > 0, chapters.contains(where: \.isVIP) else { return }
+        purchaseTask = Task { await loadPurchaseStates(request: request, catalogRequest: catalogRequest) }
+    }
+
+    @MainActor private func loadPurchaseStates(request: UUID, catalogRequest: UUID) async {
+        purchaseLoading = true
+        purchaseError = nil
+        purchaseNeedsLogin = false
+        defer { if purchaseRequest == request { purchaseLoading = false } }
+        guard await SFAPI.shared.hasAppSession() else {
+            guard purchaseRequest == request, !Task.isCancelled else { return }
+            purchaseError = "连接同一账号的账号服务后，可确认购买状态。"
+            purchaseNeedsLogin = true
+            return
+        }
+        do {
+            let snapshot = try await SFAPI.shared.chapterPurchaseStates(bookID: book.id)
+            let currentGeneration = await SFAPI.shared.sessionGeneration()
+            guard purchaseRequest == request, loadRequest == catalogRequest, !Task.isCancelled,
+                  snapshot.generation == currentGeneration else { return }
+            cloud.applyPurchaseSnapshot(snapshot, bookID: book.id)
+            chapters = chapters.map { chapter in
+                var updated = chapter
+                updated.confirmedPurchaseState = snapshot.states[chapter.id] ?? .unknown
+                updated.purchaseSessionGeneration = snapshot.generation
+                return updated
+            }
+        } catch {
+            guard purchaseRequest == request, loadRequest == catalogRequest, !Task.isCancelled,
+                  !AccountShelfState.isCancellation(error) else { return }
+            purchaseError = error.localizedDescription
+            switch error {
+            case SFAPIError.loginRequired, SFAPIError.authenticationRequired: purchaseNeedsLogin = true
+            default: break
+            }
+        }
     }
 
     @MainActor private func loadAudio() async {

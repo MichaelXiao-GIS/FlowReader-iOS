@@ -3,6 +3,46 @@ import XCTest
 
 @MainActor
 final class LibraryTests: XCTestCase {
+    func testOldContentRemainsDecodableAndCurrentVIPCacheReadsOffline() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = LibraryStore(directory: root)
+        let book = Book(id: 20, title: "缓存版本测试", author: "原创测试")
+        let chapter = Chapter(id: 101, bookID: 20, volumeID: 1, volumeTitle: "正文", title: "第一章", order: 0, isVIP: true)
+        let old = ChapterContent(chapter: chapter, text: "旧格式")
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any])
+        object.removeValue(forKey: "sourceFormatVersion")
+        let decoded = try JSONDecoder().decode(ChapterContent.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertNil(decoded.sourceFormatVersion)
+        library.save(book: book, chapters: [chapter])
+        try library.store(content: ChapterContent(chapter: chapter, text: "已经校正的原创测试文字", sourceFormatVersion: 2), book: book)
+        let content = try await library.content(chapter: chapter)
+        XCTAssertEqual(content.sourceFormatVersion, 2)
+        XCTAssertEqual(content.text, "已经校正的原创测试文字")
+    }
+
+    func testFailedVIPRefreshPreservesOriginalUntilSuccessfulReplacement() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book = Book(id: 20, title: "缓存恢复测试", author: "原创测试")
+        let chapter = Chapter(id: 101, bookID: 20, volumeID: 1, volumeTitle: "正文", title: "第一章", order: 0, isVIP: true)
+        let offline = LibraryStore(directory: root, fetchContent: { _ in throw URLError(.notConnectedToInternet) })
+        offline.save(book: book, chapters: [chapter])
+        try offline.store(content: ChapterContent(chapter: chapter, text: "需要更新的原创测试文字"), book: book)
+        do {
+            _ = try await offline.content(chapter: chapter)
+            XCTFail("Old OCR must not silently return as corrected text")
+        } catch LibraryError.outdatedVIPCache { }
+        XCTAssertEqual(offline.cachedContent(chapter: chapter)?.text, "需要更新的原创测试文字")
+        let online = LibraryStore(directory: root, fetchContent: { chapter in
+            ChapterContent(chapter: chapter, text: "已更新的原创测试文字", sourceFormatVersion: 2)
+        })
+        _ = try await online.content(chapter: chapter)
+        let reopened = LibraryStore(directory: root)
+        XCTAssertEqual(reopened.cachedContent(chapter: chapter)?.sourceFormatVersion, 2)
+        XCTAssertEqual(reopened.cachedContent(chapter: chapter)?.text, "已更新的原创测试文字")
+    }
+
     func testPersistenceImportAndExports() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

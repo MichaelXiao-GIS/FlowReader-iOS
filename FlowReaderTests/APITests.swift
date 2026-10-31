@@ -69,6 +69,7 @@ final class APITests: XCTestCase {
         let response = HTTPURLResponse(url: URL(string: "https://api.sfacg.com/user")!, statusCode: 200, httpVersion: nil, headerFields: nil)!
         XCTAssertThrowsError(try SFAPI.parseAppResponse(data, response: response)) { error in
             XCTAssertEqual(error.localizedDescription, "请在官方客户端完成验证")
+            guard case SFAPIError.authenticationRequired = error else { return XCTFail("Authentication failures must remain identifiable") }
         }
     }
 
@@ -80,6 +81,37 @@ final class APITests: XCTestCase {
         XCTAssertThrowsError(try SFAPI.parseAppResponse(Data("<html>maintenance</html>".utf8), response: success))
         let parsed = try SFAPI.parseAppResponse(Data(#"{"status":{"httpCode":200},"data":{"novelId":42}}"#.utf8), response: success) as? [String: Any]
         XCTAssertEqual(parsed?["novelId"] as? Int, 42)
+    }
+
+    func testSuccessRequiresAnExplicitValidAPIEnvelope() throws {
+        let response = HTTPURLResponse(url: URL(string: "https://api.sfacg.com/user/newSignInfo")!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        for text in [#"{}"#, #"{"data":[]}"#, #"{"status":{},"data":[]}"#,
+                     #"{"status":{"httpCode":true},"data":[]}"#,
+                     #"{"status":{"httpCode":200.5},"data":[]}"#,
+                     #"{"status":{"httpCode":200,"errorCode":"invalid"},"data":[]}"#] {
+            XCTAssertThrowsError(try SFAPI.parseAppResponse(Data(text.utf8), response: response), text)
+        }
+        for field in ["", ",\"errorCode\":200", ",\"errorCode\":0", ",\"errorCode\":null"] {
+            let data = Data("{\"status\":{\"httpCode\":200\(field)},\"data\":{\"novelId\":42}}".utf8)
+            let payload = try SFAPI.parseAppResponse(data, response: response) as? [String: Any]
+            XCTAssertEqual(payload?["novelId"] as? Int, 42)
+        }
+    }
+
+    func testBusinessRejectionCannotBecomeASignInReceipt() {
+        let response = HTTPURLResponse(url: URL(string: "https://api.sfacg.com/user/newSignInfo")!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+        for httpCode in ["", "\"httpCode\":200,"] {
+            let body = Data("{\"status\":{\(httpCode)\"errorCode\":502,\"msg\":\"需要登录才能访问该资源\"},\"data\":null}".utf8)
+            XCTAssertThrowsError(try SFAPI.parseAppResponse(body, response: response)) { error in
+                guard case SFAPIError.authenticationRequired(let message) = error else { return XCTFail("Authentication must not become success") }
+                XCTAssertEqual(message, "需要登录才能访问该资源")
+            }
+        }
+        let risk = Data(#"{"status":{"httpCode":200,"errorCode":1146,"msg":"请先完成验证码"},"data":null}"#.utf8)
+        XCTAssertThrowsError(try SFAPI.parseAppResponse(risk, response: response)) { error in
+            XCTAssertEqual(error.localizedDescription, "请先完成验证码")
+            XCTAssertFalse(SignInProtocol.isAlreadySignedError(error))
+        }
     }
 
     private func cookie(_ name: String, domain: String = ".sfacg.com", path: String = "/", expires: Date? = nil) -> HTTPCookie {

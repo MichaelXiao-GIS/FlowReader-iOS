@@ -6,6 +6,7 @@ struct RootView: View {
     @State private var selection: Destination = .discover
     @State private var discoverPath = NavigationPath()
     @State private var accountPath = NavigationPath()
+    @State private var cloudLibrary = CloudLibraryStore()
     @AppStorage("appearance") private var appearance = "system"
 
     var body: some View {
@@ -17,6 +18,8 @@ struct RootView: View {
             }
         }
         .tint(FlowTheme.accent)
+        .environment(cloudLibrary)
+        .task { await cloudLibrary.checkSessionGeneration() }
         .preferredColorScheme(appearance == "light" ? .light : appearance == "dark" ? .dark : nil)
         .alert("无法完成操作", isPresented: Binding(get: { library.errorMessage != nil }, set: { if !$0 { library.errorMessage = nil } })) {
             Button("好", role: .cancel) { library.errorMessage = nil }

@@ -65,6 +65,7 @@ final class FlowReaderUITests: XCTestCase {
         XCTAssertEqual(startReading.label, "继续阅读")
         navigateBack(until: book, labels: ["现在就读", "返回", "Back"])
         selectTab("书库")
+        selectLibraryScope("本机书籍")
         XCTAssertTrue(app.staticTexts["我的藏书"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["第二章 风从远方来"].exists, "书库应保留刚才的阅读位置")
         capture("07-书库与续读")
@@ -81,11 +82,33 @@ final class FlowReaderUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["把故事带在身边"].waitForExistence(timeout: 5), "每次独立测试启动后下载队列应为空")
         capture("08-下载")
 
+        selectTab("书库")
+        selectLibraryScope("云端书架")
+        XCTAssertTrue(app.buttons["cloud-library-login"].waitForExistence(timeout: 5), "未连接时云端书架应提供登录入口")
+        capture("08-云端书架未连接")
+        selectLibraryScope("本机书籍")
+        XCTAssertTrue(app.buttons["library-local--100"].waitForExistence(timeout: 5), "切换来源后本机样书应保留")
+
         selectTab("我的")
-        XCTAssertTrue(app.staticTexts["偏好设置"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["关于菠萝阅"].exists)
+        XCTAssertFalse(app.staticTexts["账号书架"].exists, "我的页面不应再容纳云端书籍列表")
+        let benefits = app.buttons["account-benefits"]
+        reveal(benefits)
+        benefits.tap()
+        let connect = app.buttons["benefits-connect"]
+        XCTAssertTrue(connect.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["连接账号服务后，可读取今日状态并签到。"].exists, "未连接账号服务时不能假装已读取签到状态")
+        XCTAssertFalse(app.buttons["sign-in-submit"].exists, "未连接时不应显示可提交的签到操作")
+        capture("09-会员与签到未连接")
+        connect.tap()
+        XCTAssertTrue(app.secureTextFields.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["连接账号服务"].exists)
+        app.navigationBars.buttons["取消"].tap()
+        navigateBack(until: benefits, labels: ["我的", "返回", "Back"])
+
+        let about = app.buttons["关于菠萝阅"]
+        reveal(about)
         capture("09-账户")
-        app.buttons["关于菠萝阅"].tap()
+        about.tap()
         XCTAssertTrue(app.staticTexts["FLOW READER"].waitForExistence(timeout: 5))
         capture("10-关于")
         app.navigationBars.buttons["完成"].tap()
@@ -93,6 +116,22 @@ final class FlowReaderUITests: XCTestCase {
         selectTab("发现")
         XCTAssertTrue(app.buttons["book--100"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.searchFields.firstMatch.exists, "发现页应显示原生搜索入口")
+    }
+
+    private func reveal(_ element: XCUIElement) {
+        for _ in 0..<6 {
+            if element.exists && element.isHittable { return }
+            app.swipeUp()
+        }
+        XCTAssertTrue(element.exists && element.isHittable, "滚动后应能找到账号页入口")
+    }
+
+    private func selectLibraryScope(_ label: String) {
+        let picker = app.segmentedControls["library-scope"]
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
+        let option = picker.buttons[label]
+        XCTAssertTrue(option.exists)
+        if !option.isSelected { option.tap() }
     }
 
     private func selectTab(_ label: String) {

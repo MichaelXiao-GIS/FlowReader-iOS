@@ -30,12 +30,14 @@ struct DownloadJob: Identifiable, Codable, Hashable {
 
 enum LibraryError: LocalizedError {
     case emptyFile, unsupportedEncoding, tooLarge, noChapters
+    case outdatedVIPCache(String)
     var errorDescription: String? {
         switch self {
         case .emptyFile: return "文件中没有可阅读的文字。"
         case .unsupportedEncoding: return "无法识别文字编码，请将文件保存为 UTF-8 后重新导入。"
         case .tooLarge: return "请选择小于 50 MB 的文本文件。"
         case .noChapters: return "请先下载至少一个章节再导出。"
+        case .outdatedVIPCache(let reason): return "此 VIP 章节的旧缓存需要重新识别，原文件已保留。\(reason)"
         }
     }
 }
@@ -49,8 +51,10 @@ final class LibraryStore {
     @ObservationIgnored private let root: URL
     @ObservationIgnored private let indexURL: URL
     @ObservationIgnored private let jobsURL: URL
+    @ObservationIgnored private let fetchContent: (Chapter) async throws -> ChapterContent
 
-    init(directory: URL? = nil) {
+    init(directory: URL? = nil, fetchContent: @escaping (Chapter) async throws -> ChapterContent = { try await SFAPI.shared.content(chapter: $0) }) {
+        self.fetchContent = fetchContent
         root = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("FlowLibrary", isDirectory: true)
         indexURL = root.appendingPathComponent("library.json")
         jobsURL = root.appendingPathComponent("downloads.json")
@@ -92,8 +96,20 @@ final class LibraryStore {
     }
 
     func content(chapter: Chapter) async throws -> ChapterContent {
-        if let cached = cachedContent(chapter: chapter) { return cached }
-        return try await SFAPI.shared.content(chapter: chapter)
+        if let cached = cachedContent(chapter: chapter) {
+            guard chapter.bookID > 0, chapter.id > 0, chapter.isVIP,
+                  (cached.sourceFormatVersion ?? 0) < 2 else { return cached }
+            do {
+                let refreshed = try await fetchContent(chapter)
+                try Task.checkCancellation()
+                // Replace only after a successful decode; an offline failure leaves the original file intact.
+                try JSONEncoder().encode(refreshed).write(to: contentURL(bookID: chapter.bookID, chapterID: chapter.id), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                return refreshed
+            } catch is CancellationError { throw CancellationError() }
+            catch let error as URLError where error.code == .cancelled { throw CancellationError() }
+            catch { throw LibraryError.outdatedVIPCache(error.localizedDescription) }
+        }
+        return try await fetchContent(chapter)
     }
 
     func store(content: ChapterContent, book: Book) throws {

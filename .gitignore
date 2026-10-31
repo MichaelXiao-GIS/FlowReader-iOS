@@ -5,6 +5,9 @@ dist/
 xcuserdata/
 *.xcresult
 *.ipa
+*.apk
+*.apks
+*.xapk
 *.mobileprovision
 *.p12
 .env
