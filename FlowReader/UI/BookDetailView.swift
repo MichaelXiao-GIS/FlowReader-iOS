@@ -86,7 +86,7 @@ struct BookDetailView: View {
         .sheet(item: $orderingChapter, onDismiss: {
             guard let chapter = purchasedReadingChapter else { return }
             purchasedReadingChapter = nil
-            startPurchaseRefresh()
+            startPurchaseRefresh(forceRefresh: true)
             readingSession.open(ReadingRoute(book: book, chapters: chapters, initialChapter: chapter))
         }) { chapter in
             ChapterPurchaseSheet(book: book, chapter: chapter) { purchasedReadingChapter = $0 }
@@ -96,6 +96,7 @@ struct BookDetailView: View {
         .onChange(of: contentKind) { _, kind in
             if kind == 1 && tracks.isEmpty { Task { await loadAudio() } }
         }
+        .onDisappear { purchaseTask?.cancel() }
     }
 
     private var bookHeader: some View {
@@ -173,7 +174,7 @@ struct BookDetailView: View {
                 if purchaseNeedsLogin {
                     Button("连接") { showPurchaseLogin = true }.font(.caption)
                 } else {
-                    Button("重试") { startPurchaseRefresh() }.font(.caption)
+                    Button("重试") { startPurchaseRefresh(forceRefresh: true) }.font(.caption)
                 }
             }
             .accessibilityIdentifier("chapter-purchase-status")
@@ -285,16 +286,16 @@ struct BookDetailView: View {
         startPurchaseRefresh()
     }
 
-    @MainActor private func startPurchaseRefresh() {
+    @MainActor private func startPurchaseRefresh(forceRefresh: Bool = false) {
         purchaseTask?.cancel()
         let request = UUID()
         purchaseRequest = request
         let catalogRequest = loadRequest
         guard book.id > 0, chapters.contains(where: \.isVIP) else { return }
-        purchaseTask = Task { await loadPurchaseStates(request: request, catalogRequest: catalogRequest) }
+        purchaseTask = Task { await loadPurchaseStates(request: request, catalogRequest: catalogRequest, forceRefresh: forceRefresh) }
     }
 
-    @MainActor private func loadPurchaseStates(request: UUID, catalogRequest: UUID) async {
+    @MainActor private func loadPurchaseStates(request: UUID, catalogRequest: UUID, forceRefresh: Bool) async {
         purchaseLoading = true
         purchaseError = nil
         purchaseNeedsLogin = false
@@ -306,17 +307,17 @@ struct BookDetailView: View {
             return
         }
         do {
-            let snapshot = try await SFAPI.shared.chapterPurchaseStates(bookID: book.id)
+            let snapshot = try await SFAPI.shared.chapterPurchaseStates(bookID: book.id, forceRefresh: forceRefresh) { current in
+                await MainActor.run {
+                    guard purchaseRequest == request, loadRequest == catalogRequest, !Task.isCancelled,
+                          current.generation == cloud.sessionGeneration else { return }
+                    applyPurchaseStates(current)
+                }
+            }
             let currentGeneration = await SFAPI.shared.sessionGeneration()
             guard purchaseRequest == request, loadRequest == catalogRequest, !Task.isCancelled,
                   snapshot.generation == currentGeneration else { return }
-            cloud.applyPurchaseSnapshot(snapshot, bookID: book.id)
-            chapters = chapters.map { chapter in
-                var updated = chapter
-                updated.confirmedPurchaseState = snapshot.states[chapter.id] ?? .unknown
-                updated.purchaseSessionGeneration = snapshot.generation
-                return updated
-            }
+            applyPurchaseStates(snapshot)
         } catch {
             guard purchaseRequest == request, loadRequest == catalogRequest, !Task.isCancelled,
                   !AccountShelfState.isCancellation(error) else { return }
@@ -325,6 +326,17 @@ struct BookDetailView: View {
             case SFAPIError.loginRequired, SFAPIError.authenticationRequired: purchaseNeedsLogin = true
             default: break
             }
+        }
+    }
+
+    @MainActor private func applyPurchaseStates(_ snapshot: ChapterPurchaseSnapshot) {
+        cloud.applyPurchaseSnapshot(snapshot, bookID: book.id)
+        purchaseError = snapshot.notice
+        chapters = chapters.map { chapter in
+            var updated = chapter
+            updated.confirmedPurchaseState = snapshot.states[chapter.id] ?? .unknown
+            updated.purchaseSessionGeneration = snapshot.generation
+            return updated
         }
     }
 

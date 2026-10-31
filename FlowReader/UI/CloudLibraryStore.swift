@@ -12,6 +12,8 @@ final class CloudLibraryStore {
         var recordProgress: (@MainActor (Int, Int, UUID) async throws -> CloudProgressReceipt)? = nil
         var readingHistory: (@MainActor () async throws -> CloudReadingSnapshot)? = nil
         var connections: (@MainActor () async throws -> AccountConnectionSnapshot)? = nil
+        var catalog: (@MainActor (Int) async throws -> [Chapter])? = nil
+        var now: @MainActor () -> Date = { Date() }
 
         static let live = Client(
             generation: { await SFAPI.shared.sessionGeneration() },
@@ -21,7 +23,8 @@ final class CloudLibraryStore {
             bookshelf: { try await SFAPI.shared.bookshelfSync() },
             recordProgress: { try await SFAPI.shared.recordCloudProgress(bookID: $0, chapterID: $1, expectedGeneration: $2) },
             readingHistory: { try await SFAPI.shared.cloudReadingHistory() },
-            connections: { try await SFAPI.shared.accountConnections() }
+            connections: { try await SFAPI.shared.accountConnections() },
+            catalog: { try await SFAPI.shared.cloudProgressChapters(bookID: $0) }
         )
     }
 
@@ -42,15 +45,47 @@ final class CloudLibraryStore {
     private(set) var historyHasSnapshot = false
     private(set) var historyLoading = false
     private(set) var historyError: String?
+    private(set) var readingFractionRevision: UInt64 = 0
     private var lastVerifiedPrimaryAccount: AccountProfile?
     private var purchaseStatesByBook: [Int: [Int: ChapterPurchaseState]] = [:]
     @ObservationIgnored private let client: Client
     @ObservationIgnored private var accountRequest = UUID()
     @ObservationIgnored private var historyRequest = UUID()
+    @ObservationIgnored private var readingDataScope = UUID()
+    @ObservationIgnored private var historyLastAttemptAt: Date?
+    @ObservationIgnored private var acknowledgedPositions: [Int: CloudReadingProgress] = [:]
+    @ObservationIgnored private var acknowledgmentSequence: UInt64 = 0
+    @ObservationIgnored private var acknowledgmentVersions: [Int: UInt64] = [:]
+    private struct CatalogEntry {
+        let catalog: CloudReadingCatalog
+        let fetchedAt: Date
+        let bookRevision: String?
+        let requestedChapterID: Int
+    }
+    private struct CatalogJob {
+        let id: UUID
+        let task: Task<Void, Never>
+    }
+    private var catalogs: [Int: CatalogEntry] = [:]
+    @ObservationIgnored private var catalogRecency: [Int] = []
+    @ObservationIgnored private var catalogJobs: [Int: CatalogJob] = [:]
+    @ObservationIgnored private var catalogLastFailure: [Int: Date] = [:]
+    @ObservationIgnored private let catalogGate = CloudCatalogRequestGate(limit: 2)
 
     var isConnected: Bool { usesAppAccount ? appConnected : webConnected }
     private(set) var hasSavedConnection = false
     var books: [Book] { shelf.books }
+    var sortedBooks: [Book] {
+        let dates = Dictionary(uniqueKeysWithValues: readingHistory.map { ($0.bookID, $0.lastActivityAt) })
+        return books.enumerated().sorted { lhs, rhs in
+            switch (dates[lhs.element.id] ?? nil, dates[rhs.element.id] ?? nil) {
+            case let (left?, right?) where left != right: return left > right
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return lhs.offset < rhs.offset
+            }
+        }.map(\.element)
+    }
 
     init(client: Client = .live) { self.client = client }
 
@@ -59,9 +94,62 @@ final class CloudLibraryStore {
 
     func readingProgress(bookID: Int) -> CloudReadingProgress? { readingHistory.first { $0.bookID == bookID } }
 
+    func readingFraction(bookID: Int) -> Double? {
+        guard let progress = readingProgress(bookID: bookID), let entry = catalogs[bookID],
+              (0..<600).contains(client.now().timeIntervalSince(entry.fetchedAt)) else { return nil }
+        if let book = books.first(where: { $0.id == bookID }), book.updatedAt != entry.bookRevision { return nil }
+        return entry.catalog.fraction(chapterID: progress.chapterID)
+    }
+
+    /// Called only by visible shelf cards. Catalogs are shared, capped and account scoped.
+    func loadReadingFractionIfNeeded(for book: Book) async {
+        let generation = await synchronizeGeneration()
+        guard book.id > 0, let progress = readingProgress(bookID: book.id),
+              let fetch = client.catalog, !Task.isCancelled else { return }
+        let now = client.now()
+        if let cached = catalogs[book.id], (0..<600).contains(now.timeIntervalSince(cached.fetchedAt)),
+           cached.bookRevision == book.updatedAt,
+           cached.catalog.positions[progress.chapterID] != nil || cached.requestedChapterID == progress.chapterID {
+            touchCatalog(book.id)
+            return
+        }
+        if let failed = catalogLastFailure[book.id], (0..<60).contains(now.timeIntervalSince(failed)) { return }
+        if let job = catalogJobs[book.id], !job.task.isCancelled {
+            await withTaskCancellationHandler { await job.task.value } onCancel: { job.task.cancel() }
+            return
+        }
+        let id = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { if catalogJobs[book.id]?.id == id { catalogJobs[book.id] = nil } }
+            do {
+                try await catalogGate.acquire()
+                defer { Task { await self.catalogGate.release() } }
+                try Task.checkCancellation()
+                guard await isCurrent(generation), catalogJobs[book.id]?.id == id else { return }
+                let chapters = try await fetch(book.id)
+                try Task.checkCancellation()
+                let catalog = try CloudReadingCatalog(bookID: book.id, chapters: chapters)
+                guard await isCurrent(generation), catalogJobs[book.id]?.id == id else { return }
+                catalogs[book.id] = CatalogEntry(catalog: catalog, fetchedAt: client.now(), bookRevision: book.updatedAt, requestedChapterID: progress.chapterID)
+                catalogLastFailure[book.id] = nil
+                touchCatalog(book.id)
+                trimCatalogs()
+            } catch {
+                if !Task.isCancelled, !AccountShelfState.isCancellation(error),
+                   await isCurrent(generation), catalogJobs[book.id]?.id == id {
+                    catalogLastFailure[book.id] = client.now()
+                }
+            }
+        }
+        catalogJobs[book.id] = CatalogJob(id: id, task: task)
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
+
     func loadHistoryIfNeeded() async {
         _ = await synchronizeGeneration()
-        guard !historyHasSnapshot, !historyLoading else { return }
+        guard !historyLoading else { return }
+        if let last = historyLastAttemptAt, (0..<60).contains(client.now().timeIntervalSince(last)) { return }
         await refreshHistory()
     }
 
@@ -71,14 +159,17 @@ final class CloudLibraryStore {
         let request = UUID()
         historyRequest = request
         historyLoading = true
+        historyLastAttemptAt = client.now()
+        let acknowledgedBeforeRead = acknowledgmentSequence
         historyError = nil
         defer { if historyRequest == request { historyLoading = false } }
         do {
             let snapshot = try await read()
             guard await isCurrent(generation), snapshot.generation == generation,
                   historyRequest == request, !Task.isCancelled else { return }
-            readingHistory = snapshot.records
+            readingHistory = mergeAcknowledgments(into: snapshot.records, acknowledgedBeforeRead: acknowledgedBeforeRead)
             historyHasSnapshot = true
+            readingFractionRevision &+= 1
         } catch {
             guard await isCurrent(generation), historyRequest == request,
                   !Task.isCancelled, !AccountShelfState.isCancellation(error) else { return }
@@ -111,14 +202,19 @@ final class CloudLibraryStore {
         let hasApp = await client.hasAppSession()
         let hasWeb = await client.hasWebSession()
         guard hasApp || hasWeb, await isCurrent(expectedGeneration), !Task.isCancelled else { return false }
-        _ = try await record(book.id, chapter.id, expectedGeneration)
-        guard await isCurrent(expectedGeneration), !Task.isCancelled else { return false }
-        if historyHasSnapshot {
-            // History and writes use the same primary account; the optional Web login is independent.
-            // The receipt confirms the position; only a fresh GET may supply a server timestamp.
-            readingHistory.removeAll { $0.bookID == book.id }
-            readingHistory.insert(CloudReadingProgress(bookID: book.id, chapterID: chapter.id, chapterTitle: chapter.title, updatedAt: nil), at: 0)
-        }
+        let scope = readingDataScope
+        let receipt = try await record(book.id, chapter.id, expectedGeneration)
+        guard await isCurrent(expectedGeneration), readingDataScope == scope, !Task.isCancelled else { return false }
+        guard receipt.bookID == book.id, receipt.chapterID == chapter.id else { throw SFAPIError.invalidResponse }
+        // Local reading files have no account identity and are never merged into this shelf.
+        // Only this account's acknowledged write can temporarily supersede a stale GET.
+        let position = CloudReadingProgress(bookID: book.id, chapterID: chapter.id, chapterTitle: chapter.title,
+            updatedAt: nil, locallyConfirmedAt: receipt.confirmedAt)
+        acknowledgedPositions[book.id] = position
+        acknowledgmentSequence &+= 1
+        acknowledgmentVersions[book.id] = acknowledgmentSequence
+        readingHistory.removeAll { $0.bookID == book.id }
+        readingHistory = CloudProgressParser.newestFirst(readingHistory + [position])
         return true
     }
 
@@ -141,7 +237,7 @@ final class CloudLibraryStore {
         guard app || web || client.connections != nil else {
             account = nil; accountError = nil; webNeedsLogin = false; appNeedsLogin = false
             appConnected = false; webConnected = false; lastVerifiedPrimaryAccount = nil
-            readingHistory = []; historyHasSnapshot = false; historyError = nil; purchaseStatesByBook = [:]
+            clearReadingData(); purchaseStatesByBook = [:]
             webAccount = nil; webConnectionError = nil
             shelf.reset()
             accountLoading = false
@@ -163,8 +259,7 @@ final class CloudLibraryStore {
                 if let previous = lastVerifiedPrimaryAccount, let next = connections.primaryAccount,
                    !previous.matchesAccountIdentity(next) {
                     shelf.reset(); purchaseStatesByBook = [:]
-                    historyRequest = UUID(); readingHistory = []; historyHasSnapshot = false
-                    historyLoading = false; historyError = nil
+                    clearReadingData()
                 }
                 account = connections.primaryAccount
                 if let verified = connections.primaryAccount { lastVerifiedPrimaryAccount = verified }
@@ -188,9 +283,7 @@ final class CloudLibraryStore {
             if let previous = lastVerifiedPrimaryAccount, !previous.matchesAccountIdentity(profile) {
                 shelf.reset()
                 purchaseStatesByBook = [:]
-                historyRequest = UUID()
-                readingHistory = []; historyHasSnapshot = false
-                historyLoading = false; historyError = nil
+                clearReadingData()
             }
             account = profile
             lastVerifiedPrimaryAccount = profile
@@ -211,15 +304,17 @@ final class CloudLibraryStore {
     func loadIfNeeded() async {
         await refreshAccount()
         guard isConnected, !Task.isCancelled else { return }
+        async let history: Void = loadHistoryIfNeeded()
         if !shelf.hasSnapshot && !shelf.loading { await synchronizeShelf() }
-        await loadHistoryIfNeeded()
+        await history
     }
 
     func refresh() async {
         await refreshAccount()
         guard isConnected, !Task.isCancelled else { return }
+        async let history: Void = refreshHistory()
         await synchronizeShelf()
-        await refreshHistory()
+        await history
     }
 
     func reset() {
@@ -257,11 +352,52 @@ final class CloudLibraryStore {
 
     private func isCurrent(_ expected: UUID) async -> Bool { await synchronizeGeneration() == expected }
 
-    private func clearAccountData() {
-        accountRequest = UUID()
+    private func mergeAcknowledgments(into records: [CloudReadingProgress], acknowledgedBeforeRead: UInt64) -> [CloudReadingProgress] {
+        var merged = records
+        for (bookID, acknowledged) in acknowledgedPositions {
+            // A fresh GET begun after the write is authoritative, even if this device's clock
+            // is fast. Only an older, already in-flight GET is prevented from undoing a new write.
+            if (acknowledgmentVersions[bookID] ?? 0) <= acknowledgedBeforeRead {
+                acknowledgedPositions[bookID] = nil
+                acknowledgmentVersions[bookID] = nil
+                continue
+            }
+            if let index = merged.firstIndex(where: { $0.bookID == bookID }) {
+                merged[index] = acknowledged
+            } else { merged.append(acknowledged) }
+        }
+        return CloudProgressParser.newestFirst(merged)
+    }
+
+    private func touchCatalog(_ bookID: Int) {
+        catalogRecency.removeAll { $0 == bookID }
+        catalogRecency.append(bookID)
+    }
+
+    private func trimCatalogs() {
+        // Explicit LRU bounds: full chapter objects/text are never retained for cover percentages.
+        while catalogs.count > 48 || catalogs.values.reduce(0, { $0 + $1.catalog.count }) > 100_000 {
+            guard !catalogRecency.isEmpty else { break }
+            catalogs[catalogRecency.removeFirst()] = nil
+        }
+    }
+
+    private func clearReadingData() {
+        readingDataScope = UUID()
         historyRequest = UUID()
         readingHistory = []; historyHasSnapshot = false
         historyLoading = false; historyError = nil
+        historyLastAttemptAt = nil
+        acknowledgedPositions = [:]
+        acknowledgmentVersions = [:]
+        readingFractionRevision &+= 1
+        for job in catalogJobs.values { job.task.cancel() }
+        catalogJobs = [:]; catalogs = [:]; catalogRecency = []; catalogLastFailure = [:]
+    }
+
+    private func clearAccountData() {
+        accountRequest = UUID()
+        clearReadingData()
         shelf.reset()
         purchaseStatesByBook = [:]
         account = nil; accountError = nil; lastVerifiedPrimaryAccount = nil

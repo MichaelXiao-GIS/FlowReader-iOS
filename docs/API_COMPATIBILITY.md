@@ -31,7 +31,9 @@ VIP 等级、付费会员资格和单章订阅权限是不同概念。只显示�
 
 没有 App 会话时，原有网页兼容阅读仍可通过官方网页会话取得授权图片，再由本机 Apple Vision 识别。App 账号请求失败不会静默切换到另一个网页账号。已还原 App 正文使用格式版本 4。仅标记为 3 的正编号 App 章节缓存本地转换一次，原子保存成功后才返回；免费章、VIP、下载重跑及导出都经过此入口。网页图片识别版本 2、本地导入和版本 4 不重复还原，失败保留旧文件并明确报错。
 
-目录权限通过同账号的认证 App 请求读取。明确的 `has=true` 显示“已购买”；当前账号 `needFireMoney` 为有效数值零，或同一会话已成功读取正文时显示“可阅读”；有效正价且缺失 `has` 时显示“需订阅”。APK 的 `Chapter` 模型没有 `has/owned/purchased` 字段，目录调用中的 `expand=originNeedFireMoney` 提供原价，不能作为购买记录。零价也可能来自赠阅或活动，不能据此捏造购买交易。“可阅读”“需订阅”与“已购买”分别显示；缺失或异常价格字段保持未知。权限只保留在当前会话内，旧目录缓存和账号余额不作为购买证明。
+目录权限通过同账号的认证 App 请求读取。1.5.0 同时接入 APK `AccountApi.getUserConsumesDetail` 和订阅详情 `ConsSubscriptionDetailViewModel.j2` 使用的 `GET /user/consumes?type=chaps&entityId={novelId}&page={page}&size={size}`。原始调用确认 `type=chaps` 和作品编号；`ConsSubscriptionDetailItemViewModel` 的小说阅读跳转确认 `detailId` 是章节编号。认证只读验证确认数组结构、记录与目录的对应关系及每页最多 20 条的限制。目录先给出当前权限，随后每页逐步补齐已购标记；按会话和作品缓存，未完成分页不会冒充完整记录。仅本书、目录中存在、明确为“小说订阅”、火券或代券支出为正且不是广告解锁的记录可标记为“已购买”；广告和零消耗不推断成付费。分页失败保留已经确认的记录并提示重试，不把缺失记录判断成未购买。历史付费与当前明确收费权限冲突时，保留当前权限并提示差异。
+
+明确的 `has=true` 显示“已购买”；当前账号 `needFireMoney` 为有效数值零，或同一会话已成功读取正文时显示“可阅读”；有效正价且缺失 `has` 时显示“需订阅”。APK 的 `Chapter` 模型没有 `has/owned/purchased` 字段，目录调用中的 `expand=originNeedFireMoney` 提供原价，不能作为购买记录。零价也可能来自赠阅或活动，不能据此捏造购买交易。“可阅读”“需订阅”与“已购买”分别显示；缺失或异常价格字段保持未知。权限只保留在当前会话内，旧目录缓存和账号余额不作为购买证明。
 
 ## 余额与单章订阅
 
@@ -66,10 +68,14 @@ VIP 图片解析参考上游 `src-tauri/ocr-worker/ocr_worker.py` 的多帧、38
 
 ## 云端阅读位置
 
-App 的 `GET /user/NovelViews` 返回 `accountId`、`novelId`、`chapterId`、`lastViewTime` 和 `unreadChapCount`，已通过认证只读验证。APK `NovelApi.updateNovelVisits` 注解确认写入为 `PUT /user/NovelViews/{novelId}`，作品编号是路径参数，正文为 JSON 对象。原始调用指令进一步确认键 `chapterId` 和布尔键 `triggerCardPieceDrop`。本项目只提交实际打开的章节，并显式设置 `triggerCardPieceDrop=false`，关闭附带的卡片掉落动作。该 App 写入路径已验证请求构造，未为测试修改真实账号进度。
+App 的 `GET /user/NovelViews?withUnreadCount=true` 返回 `accountId`、`novelId`、`chapterId`、`lastViewTime` 和 `unreadChapCount`，已通过认证只读验证。APK `NovelApi.updateNovelVisits` 注解确认写入为 `PUT /user/NovelViews/{novelId}`，作品编号是路径参数，正文为 JSON 对象。原始调用指令进一步确认键 `chapterId` 和布尔键 `triggerCardPieceDrop`。本项目只提交实际打开的章节，并显式设置 `triggerCardPieceDrop=false`，关闭附带的卡片掉落动作。该 App 写入路径已验证请求构造，未为测试修改真实账号进度。
 
 没有 App 会话时保留官方移动网页兼容路径：`POST https://m.sfacg.com/API/Book.ashx?op=addviewrecord`，表单字段为 `bookid` 与 `articleid`。此前保持原章节编号不变的验证显示，Web 提交后 App 阅读记录的服务器时间更新，确认两条读取/写入路径使用同一阅读记录。存在 App 会话时始终使用 App 主账号，不要求可选网页会话有效。
 
 客户端在正文成功显示 3 秒、仍处于该章节且应用位于前台时提交章节；滚动、下载、导入与打开书库不提交旧进度。请求和结果校验会话代际，App 读取时核对记录的账号 ID，写入前重新确认当前 App 身份。云端同步精确到章节，段落位置保存在本机；不同章节由读者点击“从云端继续”选择，不自动覆盖本机位置。
 
-真实 `lastViewTime` 为不带时区的 ISO 日期，客户端不擅自假定其时区，也不用它覆盖本机较新的进度。`m.sfacg.com/history/` 与 `getViewHistorys` 只包含书籍访问记录，不作为章节位置；`pages.sfacg.com/api/user/NovelViews` 实际返回用户资料，未使用。
+真实 `lastViewTime` 为不带时区的 ISO 日期。APK `NovelViews.build` 调用的 `u70.u.M` 对长度 19 的日期追加 `+0800`，再用 `yyyy-MM-dd'T'HH:mm:ssZ` 解析；1.5.0 依据这一实际指令将此格式按北京时间解析，并兼容显式时区，按最近阅读降序排列。没有有效阅读记录的书籍保留稳定书架顺序。
+
+书架响应没有章节总数；百分比通过按需读取目录、定位云端 `chapterId` 的目录序号得到，按章节计算，不声称是字数或段落精度。未知或目录不存在的位置不显示虚构的 0%；读取进度不提交云端写入。目录读取限制并发并复用缓存，避免一次载入整个书架的所有目录。
+
+`m.sfacg.com/history/` 与 `getViewHistorys` 只包含书籍访问记录，不作为章节位置；`pages.sfacg.com/api/user/NovelViews` 实际返回用户资料，未使用。

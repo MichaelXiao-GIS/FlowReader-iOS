@@ -10,7 +10,7 @@ struct LibraryShelfLayout {
     let cardWidth: CGFloat
     var coverHeight: CGFloat { cardWidth / 0.7 }
 
-    init(availableWidth: CGFloat, dynamicTypeSize: DynamicTypeSize) {
+    init(availableWidth: CGFloat, dynamicTypeSize: DynamicTypeSize, maximumColumns: Int? = nil) {
         let width = availableWidth.isFinite ? max(1, min(availableWidth, Self.maximumWidth)) : 1
         let contentWidth = max(1, width - horizontalPadding * 2)
         let minimum: CGFloat
@@ -29,11 +29,8 @@ struct LibraryShelfLayout {
         let fitting = max(1, Int(floor((contentWidth + columnSpacing) / (minimum + columnSpacing))))
         // Three covers remain legible down to 88 pt each. Standard phone widths use
         // three columns; larger windows grow the shelf without oversized covers.
-        if compact && contentWidth >= 88 * 3 + columnSpacing * 2 {
-            columnCount = max(3, fitting)
-        } else {
-            columnCount = fitting
-        }
+        let preferredCount = compact && contentWidth >= 88 * 3 + columnSpacing * 2 ? max(3, fitting) : fitting
+        columnCount = maximumColumns.map { min(preferredCount, max(1, $0)) } ?? preferredCount
         cardWidth = max(1, (contentWidth - CGFloat(columnCount - 1) * columnSpacing) / CGFloat(columnCount))
     }
 

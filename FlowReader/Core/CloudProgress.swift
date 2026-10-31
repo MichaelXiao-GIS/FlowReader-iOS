@@ -7,6 +7,14 @@ struct CloudReadingProgress: Identifiable, Hashable, Sendable {
     let chapterID: Int
     var chapterTitle: String? = nil
     let updatedAt: Date?
+    /// Official count of chapters after the current chapter; -1/missing remains unknown.
+    var unreadChapterCount: Int? = nil
+    /// Acknowledged on this device in the current account scope; never a server timestamp.
+    var locallyConfirmedAt: Date? = nil
+
+    var lastActivityAt: Date? {
+        [updatedAt, locallyConfirmedAt].compactMap { $0 }.max()
+    }
 }
 
 struct CloudReadingSnapshot: Sendable {
@@ -29,7 +37,7 @@ extension SFAPI {
         let account = try await accountServiceProfile()
         // History belongs to the primary App account. An optional expired Web login must not block it.
         guard generation == sessionGeneration() else { throw CancellationError() }
-        var request = try appRequest(path: "/user/NovelViews", query: [:], body: nil, includeSession: true, method: "GET")
+        var request = try appRequest(path: "/user/NovelViews", query: ["withUnreadCount": "true"], body: nil, includeSession: true, method: "GET")
         request.cachePolicy = .reloadIgnoringLocalCacheData
         let (data, response) = try await send(request, acceptServerErrors: true, expectedGeneration: generation)
         let payload = try Self.parseAppResponse(data, response: response)
@@ -97,21 +105,45 @@ enum CloudProgressParser {
             guard let bookID = integer(row["novelId"]), bookID > 0 else { throw SFAPIError.invalidResponse }
             // A visit with no chapter is not a reading position.
             guard let chapterID = integer(row["chapterId"]), chapterID > 0 else { continue }
-            let position = CloudReadingProgress(bookID: bookID, chapterID: chapterID, updatedAt: parseTimestamp(row["lastViewTime"] as? String))
+            let unread = integer(row["unreadChapCount"]).flatMap { $0 >= 0 ? $0 : nil }
+            let position = CloudReadingProgress(bookID: bookID, chapterID: chapterID, updatedAt: parseTimestamp(row["lastViewTime"] as? String), unreadChapterCount: unread)
             if let previous = records[bookID] {
-                if let previousDate = previous.updatedAt, let date = position.updatedAt, date > previousDate { records[bookID] = position }
+                if let date = position.updatedAt, previous.updatedAt.map({ date > $0 }) ?? true { records[bookID] = position }
             } else {
                 order.append(bookID)
                 records[bookID] = position
             }
         }
-        return order.compactMap { records[$0] }
+        return newestFirst(order.compactMap { records[$0] })
     }
 
-    /// Unzoned server dates cannot safely be compared with this device's local progress dates.
+    static func newestFirst(_ records: [CloudReadingProgress]) -> [CloudReadingProgress] {
+        records.enumerated().sorted { lhs, rhs in
+            switch (lhs.element.lastActivityAt, rhs.element.lastActivityAt) {
+            case let (left?, right?) where left != right: return left > right
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return lhs.offset < rhs.offset
+            }
+        }.map(\.element)
+    }
+
+    /// Android NovelViews.build calls u70.u.M, which appends +0800 to a 19-character
+    /// yyyy-MM-dd'T'HH:mm:ss value before parsing yyyy-MM-dd'T'HH:mm:ssZ.
+    /// This is a service convention, independent of the device's current timezone.
     static func parseTimestamp(_ value: String?) -> Date? {
-        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
-              value.range(of: "(?:Z|[+-][0-9]{2}:?[0-9]{2})$", options: [.regularExpression, .caseInsensitive]) != nil else { return nil }
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        if value.range(of: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$", options: .regularExpression) != nil {
+            let parser = DateFormatter()
+            parser.locale = Locale(identifier: "en_US_POSIX")
+            parser.calendar = Calendar(identifier: .gregorian)
+            parser.timeZone = TimeZone(secondsFromGMT: 8 * 60 * 60)
+            parser.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+            parser.isLenient = false
+            guard let date = parser.date(from: value), parser.string(from: date) == value else { return nil }
+            return date
+        }
+        guard value.range(of: "(?:Z|[+-][0-9]{2}:?[0-9]{2})$", options: [.regularExpression, .caseInsensitive]) != nil else { return nil }
         let parser = ISO8601DateFormatter()
         parser.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         if let date = parser.date(from: value) { return date }

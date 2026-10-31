@@ -60,6 +60,8 @@ extension SFAPI {
     func purchaseChapter(quote: ChapterOrderQuote) async throws -> ChapterOrderReceipt {
         guard hasAppSession() else { throw SFAPIError.loginRequired }
         guard sessionGeneration() == quote.generation else { throw CancellationError() }
+        // A submission can create a new paid record even if its response is interrupted.
+        await ChapterSubscriptionCache.shared.invalidate(bookID: quote.chapter.bookID, generation: quote.generation)
         let receipt = try await ChapterOrderCoordinator.shared.purchase(quote: quote, refresh: {
             try await self.chapterOrderQuote(chapter: quote.chapter, expectedGeneration: quote.generation)
         }, submit: { fresh in

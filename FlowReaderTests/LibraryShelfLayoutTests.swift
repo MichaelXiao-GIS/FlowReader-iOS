@@ -41,6 +41,19 @@ final class LibraryShelfLayoutTests: XCTestCase {
         assertFits(largestText, availableWidth: 350)
     }
 
+    func testRecommendationGridKeepsThreeColumnsAcrossPhoneAndDuoWidths() {
+        for width: CGFloat in [320, 350, 393, 402, 678, 760] {
+            let layout = LibraryShelfLayout(availableWidth: width, dynamicTypeSize: .large, maximumColumns: 3)
+            XCTAssertEqual(layout.columnCount, 3)
+            XCTAssertGreaterThanOrEqual(layout.cardWidth, 88)
+            assertFits(layout, availableWidth: width)
+        }
+        let largeText = LibraryShelfLayout(availableWidth: 350, dynamicTypeSize: .accessibility1, maximumColumns: 3)
+        XCTAssertEqual(largeText.columnCount, 2)
+        let largestText = LibraryShelfLayout(availableWidth: 350, dynamicTypeSize: .accessibility5, maximumColumns: 3)
+        XCTAssertEqual(largestText.columnCount, 1)
+    }
+
     func testRotationAndTransientWidthsKeepFiniteGeometry() {
         for width: CGFloat in [0, -1, .nan, .infinity, 240, 350, 780] {
             let layout = LibraryShelfLayout(availableWidth: width, dynamicTypeSize: .large)

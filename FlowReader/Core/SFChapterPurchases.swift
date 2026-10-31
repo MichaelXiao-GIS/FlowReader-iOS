@@ -4,11 +4,14 @@ import CoreFoundation
 struct ChapterPurchaseSnapshot: Sendable {
     let states: [Int: ChapterPurchaseState]
     let generation: UUID
+    var ownershipRecordsComplete: Bool = false
+    var notice: String? = nil
 }
 
 extension SFAPI {
-    /// Reads explicit ownership from the authenticated catalogue. Never places an order.
-    func chapterPurchaseStates(bookID: Int) async throws -> ChapterPurchaseSnapshot {
+    /// Combines current account prices with positive chapter subscription records. Never places an order.
+    func chapterPurchaseStates(bookID: Int, forceRefresh: Bool = false,
+                               onCurrentPermissions: (@Sendable (ChapterPurchaseSnapshot) async -> Void)? = nil) async throws -> ChapterPurchaseSnapshot {
         guard bookID > 0 else { throw SFAPIError.invalidIdentifier }
         let generation = sessionGeneration()
         let verified = verifiedReadableChapterStates(bookID: bookID, generation: generation)
@@ -23,8 +26,43 @@ extension SFAPI {
         let (data, response) = try await send(request, acceptServerErrors: true, expectedGeneration: generation)
         let payload = try Self.parseAppResponse(data, response: response)
         let fresh = try ChapterPurchaseParser.states(from: payload)
-        let states = ChapterPurchaseParser.merging(verified: verified, into: fresh)
-        return ChapterPurchaseSnapshot(states: states, generation: generation)
+        let readable = ChapterPurchaseParser.merging(verified: verified, into: fresh)
+        let cached = await ChapterSubscriptionCache.shared.value(bookID: bookID, generation: generation)
+        guard sessionGeneration() == generation else { throw CancellationError() }
+        // Publish current reading access before walking purchase history. Long novels never
+        // need to wait for all subscription pages before their directory shows usable states.
+        if let onCurrentPermissions {
+            let initialStates = cached.map { ChapterPurchaseParser.merging(paidChapterIDs: $0.paidChapterIDs, into: readable).states } ?? readable
+            await onCurrentPermissions(ChapterPurchaseSnapshot(states: initialStates, generation: generation))
+            try Task.checkCancellation()
+            guard sessionGeneration() == generation else { throw CancellationError() }
+        }
+        let records: ChapterSubscriptionResult
+        if !forceRefresh, let cached, cached.isComplete {
+            records = cached
+        } else {
+            records = try await ChapterSubscriptionProtocol.load(bookID: bookID, knownPaidChapterIDs: cached?.paidChapterIDs ?? [], onProgress: { progress in
+                guard await self.sessionGeneration() == generation else { return }
+                await ChapterSubscriptionCache.shared.store(progress, bookID: bookID, generation: generation)
+                if let onCurrentPermissions {
+                    let merged = ChapterPurchaseParser.merging(paidChapterIDs: progress.paidChapterIDs, into: readable)
+                    await onCurrentPermissions(ChapterPurchaseSnapshot(states: merged.states, generation: generation))
+                }
+            }) { plan in
+                let payload = try await self.orderPayload(path: plan.path, query: plan.query, method: plan.method, generation: generation)
+                return try ChapterSubscriptionProtocol.parse(payload, bookID: bookID)
+            }
+            guard sessionGeneration() == generation else { throw CancellationError() }
+            await ChapterSubscriptionCache.shared.store(records, bookID: bookID, generation: generation)
+        }
+        try Task.checkCancellation()
+        guard sessionGeneration() == generation else { throw CancellationError() }
+        let merged = ChapterPurchaseParser.merging(paidChapterIDs: records.paidChapterIDs, into: readable)
+        let conflictNotice = merged.conflictCount > 0 ? "部分历史付费记录与当前阅读权限不一致，这些章节以官方当前权限为准。" : nil
+        let notice = [records.notice, conflictNotice].compactMap { $0 }.joined(separator: "\n")
+        return ChapterPurchaseSnapshot(states: merged.states, generation: generation,
+                                       ownershipRecordsComplete: records.isComplete,
+                                       notice: notice.isEmpty ? nil : notice)
     }
 }
 
@@ -35,6 +73,26 @@ enum ChapterPurchaseParser {
         var result = fresh
         for (id, state) in verified where result[id] == nil || result[id] == .unknown { result[id] = state }
         return result
+    }
+
+    struct PaidMerge: Sendable {
+        let states: [Int: ChapterPurchaseState]
+        let conflictCount: Int
+    }
+
+    /// Never treat absence from history as proof of non-purchase. Only chapters in this
+    /// authenticated catalogue can receive a purchase badge, and current denials still win.
+    static func merging(paidChapterIDs: Set<Int>, into fresh: [Int: ChapterPurchaseState]) -> PaidMerge {
+        var states = fresh
+        var conflicts = 0
+        for id in paidChapterIDs {
+            switch states[id] {
+            case .available, .unknown: states[id] = .purchased
+            case .requiresPurchase, .notPurchased: conflicts += 1
+            case .purchased, nil: break
+            }
+        }
+        return PaidMerge(states: states, conflictCount: conflicts)
     }
 
     static func states(from payload: Any) throws -> [Int: ChapterPurchaseState] {

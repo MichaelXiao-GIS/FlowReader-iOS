@@ -3,6 +3,13 @@ import UniformTypeIdentifiers
 
 struct LocalLibraryView: View {
     private enum Scope: String, CaseIterable { case cloud = "云端书架", local = "本机书籍" }
+    private struct CloudCardLoadID: Hashable {
+        let generation: UUID?
+        let revision: UInt64
+        let bookID: Int
+        let bookRevision: String?
+        let chapterID: Int?
+    }
     @Environment(LibraryStore.self) private var library
     @Environment(CloudLibraryStore.self) private var cloud
     @Environment(ReadingSession.self) private var readingSession
@@ -26,7 +33,7 @@ struct LocalLibraryView: View {
 
     private var filteredLocal: [LocalBook] { library.books.filter { matches($0.book) } }
     private var filteredCloud: [Book] {
-        cloud.books.filter { matches($0) && (cloudCategory.isEmpty || $0.shelfName == cloudCategory) }
+        cloud.sortedBooks.filter { matches($0) && (cloudCategory.isEmpty || $0.shelfName == cloudCategory) }
     }
     private var categories: [String] { Array(Set(cloud.books.compactMap(\.shelfName).filter { !$0.isEmpty })).sorted() }
     private var recent: LocalBook? {
@@ -162,11 +169,22 @@ struct LocalLibraryView: View {
             } else if !cloud.shelf.hasSnapshot && !cloud.shelf.loading && cloud.shelf.error == nil {
                 cloudMessage(title: "书架尚未同步", message: "轻点重试，读取云端收藏。", identifier: "shelf-not-loaded")
             }
+            if !filteredCloud.isEmpty {
+                Text("最近阅读在前，进度按章节位置计算。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             LazyVGrid(columns: layout.columns, alignment: .leading, spacing: layout.rowSpacing) {
                 ForEach(filteredCloud) { book in
-                    NavigationLink(value: book) { coverCard(book, layout: layout) }
+                    NavigationLink(value: book) {
+                        coverCard(book, layout: layout, readingFraction: cloud.readingFraction(bookID: book.id))
+                    }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("library-cloud-\(book.id)")
+                        .task(id: CloudCardLoadID(generation: cloud.sessionGeneration, revision: cloud.readingFractionRevision,
+                                                  bookID: book.id, bookRevision: book.updatedAt,
+                                                  chapterID: cloud.readingProgress(bookID: book.id)?.chapterID)) {
+                            await cloud.loadReadingFractionIfNeeded(for: book)
+                        }
                 }
             }
             .accessibilityIdentifier("cloud-library-books")
@@ -275,7 +293,7 @@ struct LocalLibraryView: View {
         }
     }
 
-    private func coverCard(_ book: Book, layout: LibraryShelfLayout, detail: String? = nil) -> some View {
+    private func coverCard(_ book: Book, layout: LibraryShelfLayout, detail: String? = nil, readingFraction: Double? = nil) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             BookCover(book: book, width: layout.cardWidth, height: layout.coverHeight)
                 .matchedTransitionSource(id: book.id, in: covers)
@@ -287,6 +305,18 @@ struct LocalLibraryView: View {
                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                 }
                 if let detail { Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(2) }
+                if let readingFraction, readingFraction.isFinite, (0..<1).contains(readingFraction) {
+                    let percentage = Int((readingFraction * 100).rounded(.down))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("阅读进度 \(percentage)%")
+                            .font(.caption2).monospacedDigit().foregroundStyle(.secondary)
+                            .accessibilityLabel("阅读进度百分之\(percentage)，按章节位置计算")
+                        ProgressView(value: readingFraction)
+                            .tint(FlowTheme.accent).accessibilityHidden(true)
+                    }
+                    .padding(.top, 2)
+                    .accessibilityIdentifier("library-reading-progress-\(book.id)")
+                }
             }
         }
         .frame(width: layout.cardWidth, alignment: .leading)

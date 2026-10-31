@@ -3,6 +3,7 @@ import SwiftUI
 struct DiscoverView: View {
     @Environment(LibraryStore.self) private var library
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Namespace private var bookTransition
     @State private var query = ""
@@ -14,45 +15,49 @@ struct DiscoverView: View {
     private var loading: Bool { feed.loading }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 30) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(submittedQuery.isEmpty ? "此刻，值得一读" : "搜索结果")
-                        .font(.title3.weight(.semibold))
-                    Spacer()
-                    if loading { ProgressView().controlSize(.small) }
-                }
-                if let error = feed.error, books.isEmpty {
-                    FlowErrorView(message: error) { startLoad(reset: true) }
-                        .frame(minHeight: 240)
-                } else if books.isEmpty && !loading {
-                    ContentUnavailableView.search(text: submittedQuery)
-                } else {
-                    if let error = feed.error {
-                        HStack(alignment: .top, spacing: 16) {
-                            Text(error).font(.subheadline).foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            Button("重试") { startLoad(reset: true) }.buttonStyle(.glass)
+        GeometryReader { geometry in
+            let contentWidth = min(geometry.size.width, submittedQuery.isEmpty ? 760 : 1120)
+            let layout = LibraryShelfLayout(availableWidth: contentWidth, dynamicTypeSize: dynamicTypeSize, maximumColumns: 3)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 30) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(submittedQuery.isEmpty ? "此刻，值得一读" : "搜索结果")
+                            .font(.title3.weight(.semibold))
+                        Spacer()
+                        if loading { ProgressView().controlSize(.small) }
+                    }
+                    if let error = feed.error, books.isEmpty {
+                        FlowErrorView(message: error) { startLoad(reset: true) }
+                            .frame(minHeight: 240)
+                    } else if books.isEmpty && !loading {
+                        ContentUnavailableView.search(text: submittedQuery)
+                    } else {
+                        if let error = feed.error {
+                            HStack(alignment: .top, spacing: 16) {
+                                Text(error).font(.subheadline).foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Button("重试") { startLoad(reset: true) }.buttonStyle(.glass)
+                            }
+                            .accessibilityIdentifier("discover-inline-error")
                         }
-                        .accessibilityIdentifier("discover-inline-error")
-                    }
-                    if submittedQuery.isEmpty { featuredShelf }
-                    else { searchResults }
-                    if feed.hasMore {
-                        Button("加载更多") { startLoad(reset: false) }
-                            .buttonStyle(.glass)
-                            .frame(maxWidth: .infinity)
-                            .disabled(loading)
+                        if submittedQuery.isEmpty { featuredShelf(layout: layout) }
+                        else { searchResults }
+                        if feed.hasMore {
+                            Button("加载更多") { startLoad(reset: false) }
+                                .buttonStyle(.glass)
+                                .frame(maxWidth: .infinity)
+                                .disabled(loading)
+                        }
                     }
                 }
+                .padding(.horizontal, submittedQuery.isEmpty ? layout.horizontalPadding : horizontalSizeClass == .regular ? 36 : 24)
+                .padding(.top, 12)
+                .padding(.bottom, 36)
+                .frame(maxWidth: contentWidth, alignment: .leading)
+                .frame(maxWidth: .infinity)
             }
-            .frame(maxWidth: 1120, alignment: .leading)
-            .padding(.horizontal, horizontalSizeClass == .regular ? 36 : 24)
-            .padding(.top, 12)
-            .padding(.bottom, 36)
-            .frame(maxWidth: .infinity)
+            .background(FlowTheme.paper)
         }
-        .background(FlowTheme.paper)
         .navigationTitle("现在就读")
         .navigationBarTitleDisplayMode(.large)
         .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "搜索书名、作者")
@@ -79,33 +84,34 @@ struct DiscoverView: View {
         .onDisappear { actionTask?.cancel() }
     }
 
-    private var featuredShelf: some View {
-        ScrollView(.horizontal) {
-            LazyHStack(alignment: .top, spacing: 26) {
-                ForEach(books) { book in
-                    NavigationLink(value: book) {
-                        VStack(alignment: .leading, spacing: 14) {
-                            if reduceMotion {
-                                BookCover(book: book, width: 142, height: 201)
-                            } else {
-                                BookCover(book: book, width: 142, height: 201)
-                                    .matchedTransitionSource(id: book.id, in: bookTransition)
-                            }
-                            Text(book.title).font(.subheadline.weight(.medium)).foregroundStyle(.primary)
-                                .lineLimit(2).multilineTextAlignment(.leading)
-                            Text(book.author).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+    private func featuredShelf(layout: LibraryShelfLayout) -> some View {
+        LazyVGrid(columns: layout.columns, alignment: .leading, spacing: layout.rowSpacing) {
+            ForEach(books) { book in
+                NavigationLink(value: book) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if reduceMotion {
+                            BookCover(book: book, width: layout.cardWidth, height: layout.coverHeight)
+                        } else {
+                            BookCover(book: book, width: layout.cardWidth, height: layout.coverHeight)
+                                .matchedTransitionSource(id: book.id, in: bookTransition)
                         }
-                        .frame(width: 142, alignment: .leading)
-                        .padding(.bottom, 12)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(book.title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2, reservesSpace: true)
+                                .multilineTextAlignment(.leading)
+                            Text(book.author).font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("book-\(book.id)")
+                    .frame(width: layout.cardWidth, alignment: .leading)
+                    .accessibilityElement(children: .combine)
                 }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("book-\(book.id)")
             }
-            .padding(.top, 3)
         }
-        .scrollIndicators(.hidden)
-        .scrollClipDisabled()
+        .padding(.top, 3)
+        .accessibilityIdentifier("discover-recommendation-grid")
     }
 
     private var searchResults: some View {
@@ -127,7 +133,20 @@ struct DiscoverView: View {
         guard !Task.isCancelled, let request = feed.begin(query: submittedQuery, reset: reset) else { return }
         if (ProcessInfo.processInfo.arguments.contains("--demo") || ProcessInfo.processInfo.arguments.contains("--uitesting")) && request.query.isEmpty {
             library.seedDemoIfNeeded()
-            feed.complete(library.books.filter { $0.id == -100 }.map(\.book), for: request)
+            var samples = library.books.filter { $0.id == -100 }.map(\.book)
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--uitesting"),
+               ProcessInfo.processInfo.arguments.contains("--discover-grid-fixture"), let sample = samples.first {
+                samples += (1...6).map { index in
+                    var copy = sample
+                    copy.id = -200 - index
+                    copy.title = "网格示例 \(index)"
+                    copy.author = "离线布局示例"
+                    return copy
+                }
+            }
+            #endif
+            feed.complete(samples, for: request)
             return
         }
         do {

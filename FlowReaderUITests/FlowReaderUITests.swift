@@ -12,7 +12,27 @@ final class FlowReaderUITests: XCTestCase {
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         if name.contains("testImmersiveCurlAndLandscapeSpread") || name.contains("testBooksControlsBookmarksAndProgress") || name.contains("testHomeAndColdLaunchRestoreReading") { app.launchArguments.append("--long-reader-fixture") }
         if name.contains("testOfflineWalletAndSingleChapterConfirmation") { app.launchArguments.append("--chapter-purchase-fixture") }
+        if name.contains("testRecommendationsUseThreeColumnsAndScrollVertically") { app.launchArguments.append("--discover-grid-fixture") }
         app.launch()
+    }
+
+    func testRecommendationsUseThreeColumnsAndScrollVertically() throws {
+        let first = app.buttons["book--100"]
+        let second = app.buttons["book--201"]
+        let third = app.buttons["book--202"]
+        XCTAssertTrue(first.waitForExistence(timeout: 10))
+        XCTAssertTrue(second.exists && third.exists)
+        XCTAssertEqual(first.frame.minY, second.frame.minY, accuracy: 3)
+        XCTAssertEqual(first.frame.minY, third.frame.minY, accuracy: 3)
+        XCTAssertLessThan(first.frame.midX, second.frame.midX)
+        XCTAssertLessThan(second.frame.midX, third.frame.midX)
+        XCTAssertGreaterThanOrEqual(first.frame.minX, app.windows.firstMatch.frame.minX)
+        XCTAssertLessThanOrEqual(third.frame.maxX, app.windows.firstMatch.frame.maxX)
+        capture("34-纵向三列推荐")
+        let fourth = app.buttons["book--203"]
+        if !fourth.exists || !fourth.isHittable { app.swipeUp() }
+        XCTAssertTrue(fourth.waitForExistence(timeout: 5))
+        XCTAssertTrue(fourth.isHittable, "下一行推荐应通过纵向滚动访问")
     }
 
     func testOfflineWalletAndSingleChapterConfirmation() throws {
