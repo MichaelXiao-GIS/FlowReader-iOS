@@ -3,6 +3,38 @@ import XCTest
 
 @MainActor
 final class LibraryTests: XCTestCase {
+    func testLegacyReadingProgressDecodesWithoutParagraphOffset() throws {
+        let data = Data(#"{"chapterID":104,"paragraph":7,"updatedAt":12345}"#.utf8)
+        let progress = try JSONDecoder().decode(ReadingProgress.self, from: data)
+        XCTAssertEqual(progress.chapterID, 104)
+        XCTAssertEqual(progress.paragraph, 7)
+        XCTAssertEqual(progress.updatedAt, Date(timeIntervalSinceReferenceDate: 12345))
+        XCTAssertNil(progress.paragraphUTF16Offset)
+    }
+
+    func testParagraphUTF16PositionPersistsAndLegacyUpdatesRemainParagraphOnly() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = LibraryStore(directory: root)
+        let book = Book(id: -20, title: "段内位置测试", author: "原创测试")
+        let chapter = Chapter(id: -101, bookID: -20, volumeID: 1, volumeTitle: "正文", title: "第一章", order: 0)
+        library.recordProgress(book: book, chapters: [chapter], chapterID: chapter.id, paragraph: 7, paragraphUTF16Offset: 127)
+        let original = try XCTUnwrap(library.localBook(id: book.id)?.progress)
+
+        let reopened = LibraryStore(directory: root)
+        let restored = try XCTUnwrap(reopened.localBook(id: book.id)?.progress)
+        XCTAssertEqual(restored, original)
+        XCTAssertEqual(restored.chapterID, chapter.id)
+        XCTAssertEqual(restored.paragraph, 7)
+        XCTAssertEqual(restored.paragraphUTF16Offset, 127)
+
+        reopened.recordProgress(book: book, chapters: [chapter], chapterID: chapter.id, paragraph: 8)
+        let legacyUpdate = LibraryStore(directory: root).localBook(id: book.id)?.progress
+        XCTAssertEqual(legacyUpdate?.paragraph, 8)
+        XCTAssertNil(legacyUpdate?.paragraphUTF16Offset, "A paragraph-only update must not keep a stale offset from another position")
+        XCTAssertNil(reopened.errorMessage)
+    }
+
     func testOldContentRemainsDecodableAndCurrentVIPCacheReadsOffline() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

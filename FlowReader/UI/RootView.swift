@@ -7,6 +7,7 @@ struct RootView: View {
     @State private var discoverPath = NavigationPath()
     @State private var accountPath = NavigationPath()
     @State private var cloudLibrary = CloudLibraryStore()
+    @State private var readingSession = ReadingSession()
     @AppStorage("appearance") private var appearance = "system"
 
     var body: some View {
@@ -18,6 +19,10 @@ struct RootView: View {
             }
         }
         .tint(FlowTheme.accent)
+        .fullScreenCover(item: $readingSession.route) { route in
+            ReaderView(book: route.book, chapters: route.chapters, initialChapter: route.initialChapter)
+        }
+        .environment(readingSession)
         .environment(cloudLibrary)
         .task { await cloudLibrary.checkSessionGeneration() }
         .preferredColorScheme(appearance == "light" ? .light : appearance == "dark" ? .dark : nil)
@@ -31,7 +36,7 @@ struct RootView: View {
     private var tabs: some View {
         TabView(selection: $selection) {
             Tab("发现", systemImage: "sparkles", value: .discover) {
-                NavigationStack(path: $discoverPath) { DiscoverView().readingDestinations() }
+                NavigationStack(path: $discoverPath) { DiscoverView() }
             }
             Tab("书库", systemImage: "books.vertical", value: .library) {
                 LocalLibraryView()
@@ -40,7 +45,7 @@ struct RootView: View {
                 DownloadsView()
             }
             Tab("我的", systemImage: "person.crop.circle", value: .account) {
-                NavigationStack(path: $accountPath) { AccountView().readingDestinations() }
+                NavigationStack(path: $accountPath) { AccountView() }
             }
         }
         .tabViewStyle(.sidebarAdaptable)

@@ -3,6 +3,7 @@ import SwiftUI
 struct BookDetailView: View {
     @Environment(LibraryStore.self) private var library
     @Environment(CloudLibraryStore.self) private var cloud
+    @Environment(ReadingSession.self) private var readingSession
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State var book: Book
     @State private var chapters: [Chapter] = []
@@ -109,7 +110,7 @@ struct BookDetailView: View {
     private var actions: some View {
         HStack(spacing: 12) {
             if let first = readingChapter {
-                NavigationLink(value: ReadingRoute(book: book, chapters: chapters, initialChapter: first)) {
+                Button { readingSession.open(ReadingRoute(book: book, chapters: chapters, initialChapter: first)) } label: {
                     Label(library.localBook(id: book.id)?.progress == nil ? "开始阅读" : "继续阅读", systemImage: "book.pages")
                         .frame(maxWidth: .infinity).padding(.vertical, 5)
                 }
@@ -130,7 +131,7 @@ struct BookDetailView: View {
         if let progress = cloud.readingProgress(bookID: book.id),
            library.localBook(id: book.id)?.progress?.chapterID != progress.chapterID,
            let chapter = chapters.first(where: { $0.id == progress.chapterID && $0.bookID == book.id }) {
-            NavigationLink(value: ReadingRoute(book: book, chapters: chapters, initialChapter: chapter)) {
+            Button { readingSession.open(ReadingRoute(book: book, chapters: chapters, initialChapter: chapter)) } label: {
                 HStack(spacing: 16) {
                     Image(systemName: "icloud").font(.title2).foregroundStyle(FlowTheme.accent)
                     VStack(alignment: .leading, spacing: 6) {
@@ -184,7 +185,7 @@ struct BookDetailView: View {
                         .foregroundStyle(FlowTheme.accent)
                         .padding(.top, 18).padding(.bottom, 10)
                     ForEach(chapters.filter { $0.volumeTitle == volume }) { chapter in
-                        NavigationLink(value: ReadingRoute(book: book, chapters: chapters, initialChapter: chapter)) {
+                        Button { readingSession.open(ReadingRoute(book: book, chapters: chapters, initialChapter: chapter)) } label: {
                             HStack(spacing: 12) {
                                 Text(chapter.title).font(.subheadline).foregroundStyle(.primary)
                                     .multilineTextAlignment(.leading)

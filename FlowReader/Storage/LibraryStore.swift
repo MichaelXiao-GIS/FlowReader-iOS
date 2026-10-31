@@ -6,6 +6,7 @@ struct ReadingProgress: Codable, Hashable {
     var chapterID: Int
     var paragraph: Int
     var updatedAt: Date
+    var paragraphUTF16Offset: Int? = nil
 }
 
 struct LocalBook: Identifiable, Codable, Hashable {
@@ -122,10 +123,10 @@ final class LibraryStore {
         persist()
     }
 
-    func recordProgress(book: Book, chapters: [Chapter], chapterID: Int, paragraph: Int) {
+    func recordProgress(book: Book, chapters: [Chapter], chapterID: Int, paragraph: Int, paragraphUTF16Offset: Int? = nil) {
         if books.firstIndex(where: { $0.id == book.id }) == nil { save(book: book, chapters: chapters) }
         guard let index = books.firstIndex(where: { $0.id == book.id }) else { return }
-        books[index].progress = ReadingProgress(chapterID: chapterID, paragraph: max(0, paragraph), updatedAt: Date())
+        books[index].progress = ReadingProgress(chapterID: chapterID, paragraph: max(0, paragraph), updatedAt: Date(), paragraphUTF16Offset: paragraphUTF16Offset.map { max(0, $0) })
         persist()
     }
 
@@ -230,11 +231,18 @@ final class LibraryStore {
         guard localBook(id: -100) == nil else { return }
         let book = Book(id: -100, title: "在风抵达之前", author: "Flow 原创示例", coverURL: nil, summary: "海边的小镇，一间只在黄昏开门的书店，与一封尚未寄出的信。此书为应用原创演示内容。", category: "治愈日常", tags: ["原创示例", "海边", "日常"], isFinished: true)
         let titles = ["第一章 海边的书店", "第二章 风从远方来", "第三章 留给明天的一页"]
-        let texts = [
+        var texts = [
             "海风穿过街角时，书店的铜铃轻轻响了一声。\n\n林夏抬起头，看见门口站着一个抱着旧地图的女孩。地图的边缘已经磨软，上面用蓝色铅笔圈着一座不存在的灯塔。\n\n“我想找一本书。”女孩说。\n\n小镇的书店不大。木架贴着墙壁，从地面一直伸向屋顶；下午的光落在书脊上，仿佛有人把整个夏天收进了这里。\n\n林夏合上手中的笔记：“书名呢？”\n\n女孩摇了摇头，把地图摊在桌上。那座灯塔旁边有一行很小的字：如果你不知道下一站去哪里，就先听一听风。\n\n他认得那行字。那是祖父的笔迹。\n\n窗外，最后一班渡船驶离码头，水面留下长长的白色痕迹。林夏忽然觉得，这个原本平凡的黄昏，正在慢慢翻向新的一页。",
             "第二天清晨，林夏在书店门口发现了一个纸包。\n\n里面是一枚黄铜书签，一张褪色的船票，以及半封没有署名的信。信纸上只写着一句话：潮水会带走足迹，但不会带走约定。\n\n他沿着海岸走了很久。渔人们修补着网，孩子们在浅滩追逐，云影一片片掠过平静的水面。\n\n直到午后，他才在废弃的车站旁找到地图上的路。那条路早已不通向灯塔，只通向一片开满小花的山坡。\n\n女孩坐在坡顶，手里捧着一本没有封面的书。\n\n“找到了吗？”林夏问。\n\n“也许。”她翻开第一页，“但我还不知道，它是不是写给我的。”\n\n远处响起汽笛声。风从两人之间经过，带着盐、青草和很久以前的夏天的味道。",
             "书店重新开门的那个下午，林夏把黄铜书签放在了柜台边。\n\n女孩已经离开小镇。她留下一张新的地图，上面没有灯塔，也没有终点，只有许多空白的地方。\n\n“留给以后。”纸条上写着。\n\n林夏笑了。他取出那封未寄出的信，在背面写下书店的地址，然后仔细地折好。\n\n有些故事不必急着写完。就像有些人走得很远，只是为了在一个恰好的黄昏，重新推开熟悉的门。\n\n海风再次吹过街角，铜铃响起。\n\n他抬头，看见阳光正落在新的一页上。"
         ]
+        #if DEBUG
+        // Keep the UI fixture long enough to exercise multiple spreads on the Duo inner display.
+        // Normal demo content and users' stored books are unaffected.
+        if ProcessInfo.processInfo.arguments.contains("--uitesting") && ProcessInfo.processInfo.arguments.contains("--long-reader-fixture") {
+            texts[0] = Array(repeating: texts[0], count: 6).joined(separator: "\n\n")
+        }
+        #endif
         let chapters = titles.enumerated().map { Chapter(id: -1000 - $0.offset, bookID: -100, volumeID: 0, volumeTitle: "海风来信", title: $0.element, order: $0.offset) }
         save(book: book, chapters: chapters)
         for (index, chapter) in chapters.enumerated() {

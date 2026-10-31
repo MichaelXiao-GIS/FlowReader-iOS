@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Keeps the selected chapter and catalog independent of subsequent progress updates.
-struct ReadingRoute: Hashable {
+struct ReadingRoute: Hashable, Identifiable {
+    var id: String { "\(book.id):\(initialChapter.id)" }
     let book: Book
     let chapters: [Chapter]
     let initialChapter: Chapter
@@ -16,10 +17,9 @@ struct ReadingRoute: Hashable {
     }
 }
 
-extension View {
-    func readingDestinations() -> some View {
-        navigationDestination(for: ReadingRoute.self) { route in
-            ReaderView(book: route.book, chapters: route.chapters, initialChapter: route.initialChapter)
-        }
-    }
+/// Present reading outside the tab/sidebar hierarchy so system navigation cannot cover a page.
+@MainActor @Observable
+final class ReadingSession {
+    var route: ReadingRoute?
+    func open(_ route: ReadingRoute) { self.route = route }
 }

@@ -10,6 +10,7 @@ final class FlowReaderUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
         app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
+        if name.contains("testImmersiveCurlAndLandscapeSpread") { app.launchArguments.append("--long-reader-fixture") }
         app.launch()
     }
 
@@ -39,9 +40,12 @@ final class FlowReaderUITests: XCTestCase {
         capture("03-阅读")
 
         let settings = app.buttons["reader-settings"]
+        XCTAssertFalse(settings.exists, "进入正文应默认隐藏阅读工具")
+        toggleReaderTools()
         XCTAssertTrue(settings.waitForExistence(timeout: 5))
         settings.tap()
         let fontSize = app.sliders["reader-font-size"]
+        reveal(fontSize)
         XCTAssertTrue(fontSize.waitForExistence(timeout: 5))
         fontSize.adjust(toNormalizedSliderPosition: 0.15)
         let initialValue = fontSize.value as? String
@@ -60,7 +64,8 @@ final class FlowReaderUITests: XCTestCase {
         XCTAssertTrue(secondParagraph.waitForExistence(timeout: 5), "目录选择应实际切换到第二章正文")
         capture("06-第二章")
 
-        navigateBack(until: startReading, labels: ["作品", "返回", "Back"])
+        toggleReaderTools()
+        app.buttons["reader-close"].tap()
         XCTAssertTrue(startReading.waitForExistence(timeout: 5))
         XCTAssertEqual(startReading.label, "继续阅读")
         navigateBack(until: book, labels: ["现在就读", "返回", "Back"])
@@ -71,6 +76,91 @@ final class FlowReaderUITests: XCTestCase {
         capture("07-书库与续读")
         selectTab("下载")
         XCTAssertTrue(app.staticTexts["已保存到书库"].waitForExistence(timeout: 5), "已缓存的原创样书应完成下载任务")
+    }
+
+    func testImmersiveCurlAndLandscapeSpread() throws {
+        let book = app.buttons["book--100"]
+        XCTAssertTrue(book.waitForExistence(timeout: 15))
+        book.tap()
+        let start = app.buttons["start-reading"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        start.tap()
+        XCTAssertTrue(app.staticTexts["reader-paragraph-0"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["reader-close"].exists)
+        XCTAssertFalse(app.buttons["reader-settings"].exists)
+        capture("11-沉浸式阅读")
+        toggleReaderTools()
+        let settings = app.buttons["reader-settings"]
+        XCTAssertTrue(settings.waitForExistence(timeout: 5))
+        capture("12-轻点显示玻璃工具")
+        settings.tap()
+        let mode = app.segmentedControls["reader-turn-mode"]
+        XCTAssertTrue(mode.waitForExistence(timeout: 5))
+        mode.buttons["仿真翻页"].tap()
+        let fontControl = app.sliders["reader-font-size"]
+        reveal(fontControl)
+        fontControl.adjust(toNormalizedSliderPosition: 0.6)
+        app.buttons["reader-settings-done"].tap()
+        toggleReaderTools()
+        let pageNumber = app.staticTexts["reader-page-number"].firstMatch
+        XCTAssertTrue(pageNumber.waitForExistence(timeout: 10))
+        let surface = app.otherElements["reader-content"].firstMatch
+        let window = app.windows.firstMatch
+        XCTAssertEqual(surface.frame.minY, window.frame.minY, accuracy: 1, "卷页纸张应覆盖顶部安全区")
+        XCTAssertEqual(surface.frame.maxY, window.frame.maxY, accuracy: 1, "卷页纸张应覆盖底部安全区")
+        if surface.frame.height > surface.frame.width {
+            XCTAssertGreaterThan(app.staticTexts["reader-page-text"].firstMatch.frame.width, surface.frame.width * 0.8,
+                                 "单页正文不应为角落摄像头保留整条宽侧栏")
+        }
+        let before = pageNumber.label
+        surface.swipeLeft()
+        XCTAssertTrue(pageNumber.waitForExistence(timeout: 5))
+        XCTAssertNotEqual(pageNumber.label, before, "左右轻扫应翻到下一页")
+        capture("13-原生仿真翻页")
+        let anchor = String(app.staticTexts["reader-page-text"].firstMatch.label.prefix(12))
+
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let landscapeWindow = NSPredicate { _, _ in
+            let frame = self.app.windows.firstMatch.frame
+            return frame.width > frame.height
+        }
+        // Device Hub's Duo posture can be independent of XCUIDevice.orientation.
+        // Run this case with the active Duo display physically horizontal when needed.
+        let rotated = XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: landscapeWindow, object: nil)], timeout: 3)
+        try XCTSkipIf(rotated != .completed, "模拟器未应用横屏姿态；请在 Device Hub 将当前 Duo 屏幕旋转为横屏后重跑此用例。")
+        let pages = app.staticTexts.matching(identifier: "reader-page-number")
+        let spread = NSPredicate { _, _ in pages.count == 2 }
+        expectation(for: spread, evaluatedWith: nil)
+        waitForExpectations(timeout: 10)
+        XCTAssertNotEqual(pages.element(boundBy: 0).label, pages.element(boundBy: 1).label)
+        XCTAssertTrue(app.staticTexts.matching(identifier: "reader-page-text").allElementsBoundByIndex.map(\.label).joined().contains(anchor), "横屏重排应保留当前文字位置")
+        capture("14-横屏双页")
+        toggleReaderTools()
+        settings.tap()
+        let spreadToggle = app.switches["reader-landscape-spread"]
+        XCTAssertTrue(spreadToggle.waitForExistence(timeout: 5))
+        let switchControl = spreadToggle.switches.firstMatch
+        if switchControl.exists { switchControl.tap() } else { spreadToggle.tap() }
+        XCTAssertEqual(spreadToggle.value as? String, "0", "双栏开关应关闭")
+        app.buttons["reader-settings-done"].tap()
+        expectation(for: NSPredicate { _, _ in pages.count == 1 }, evaluatedWith: nil)
+        waitForExpectations(timeout: 10)
+        capture("15-横屏单页")
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(app.buttons["reader-close"].waitForExistence(timeout: 5))
+        app.buttons["reader-close"].tap()
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        start.tap()
+        XCTAssertTrue(app.staticTexts["reader-page-number"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["reader-settings"].exists, "重新进入阅读仍默认沉浸")
+    }
+
+    private func toggleReaderTools() {
+        // Resolve the visible reading surface so XCTest retains its display/hit-point context.
+        // An application-root coordinate can target Duo's inactive primary display.
+        let surface = app.descendants(matching: .any).matching(identifier: "reader-content").firstMatch
+        XCTAssertTrue(surface.waitForExistence(timeout: 5))
+        surface.tap()
     }
 
     func testNativeTabsAndAccountEntry() throws {
@@ -167,9 +257,11 @@ final class FlowReaderUITests: XCTestCase {
     }
 
     private func capture(_ name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
-        attachment.name = name
-        attachment.lifetime = .keepAlways
-        add(attachment)
+        for (index, screen) in XCUIScreen.screens.enumerated() {
+            let attachment = XCTAttachment(screenshot: screen.screenshot())
+            attachment.name = "\(name)-screen-\(index)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
     }
 }

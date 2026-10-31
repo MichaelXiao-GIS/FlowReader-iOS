@@ -5,6 +5,7 @@ struct LocalLibraryView: View {
     private enum Scope: String, CaseIterable { case cloud = "云端书架", local = "本机书籍" }
     @Environment(LibraryStore.self) private var library
     @Environment(CloudLibraryStore.self) private var cloud
+    @Environment(ReadingSession.self) private var readingSession
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scope: Scope = .cloud
     @State private var choseInitialScope = false
@@ -62,7 +63,7 @@ struct LocalLibraryView: View {
                 if reduceMotion { BookDetailView(book: book) }
                 else { BookDetailView(book: book).navigationTransition(.zoom(sourceID: book.id, in: covers)) }
             }
-            .readingDestinations()
+
             .searchable(text: $filter, prompt: "搜索书名、作者")
             .refreshable { if scope == .cloud { await cloud.refresh() } }
             .toolbar {
@@ -254,7 +255,7 @@ struct LocalLibraryView: View {
             guard let chapter = catalog.first(where: { $0.id == progress.chapterID && $0.bookID == book.id }) else {
                 throw SFAPIError.server("云端记录的章节暂时不在当前目录中，请在作品页选择章节。")
             }
-            path.append(ReadingRoute(book: book, chapters: catalog, initialChapter: chapter))
+            readingSession.open(ReadingRoute(book: book, chapters: catalog, initialChapter: chapter))
         } catch {
             guard !Task.isCancelled, !AccountShelfState.isCancellation(error),
                   await SFAPI.shared.sessionGeneration() == generation else { return }
@@ -314,7 +315,7 @@ struct LocalLibraryView: View {
         VStack(alignment: .leading, spacing: 18) {
             Text("接着读").font(.title2.bold())
             if let chapter = local.chapters.first(where: { $0.id == local.progress?.chapterID }) ?? local.chapters.first {
-                NavigationLink(value: ReadingRoute(book: local.book, chapters: local.chapters, initialChapter: chapter)) {
+                Button { readingSession.open(ReadingRoute(book: local.book, chapters: local.chapters, initialChapter: chapter)) } label: {
                     HStack(spacing: 20) {
                         BookCover(book: local.book, width: 76, height: 108)
                         VStack(alignment: .leading, spacing: 9) {
