@@ -7,6 +7,7 @@
 - `src-tauri/src/adapters/sfacg/app/` 中的 `constants.rs`、`signing.rs`、`client.rs`、`catalog.rs`、`auth.rs`、`audio.rs` 与相关解析文件。
 - `src-tauri/src/adapters/sfacg/web/` 中的 `client.rs`、`auth.rs`、`catalog.rs`、`content.rs`、`placeholder.rs`。
 - `src-tauri/src/adapters/sfacg/device.rs`。
+- `sfacg-content-dictionary.json` 与 `src-tauri/src/adapters/storage/settings.rs::decode_api_content`：App 授权正文的单字还原字典与逐字符算法。本项目按同一 GPL-3.0 来源分发原样 3760 条字典，SHA-256 为 `af5863d70776d9f14a236ee2229eecfb2fccdcb00f095404e412e5f3d7bd6831`；不含小说正文。
 - `src-tauri/ocr-worker/ocr_worker.py` 中的多帧图片、固定行高和拼音层预处理方式；本项目以 Swift 与本机 Apple Vision 实现，不分发其 OCR 模型。
 
 上游致谢 LanBaiCode/auto-novel 与 Oevani/Sfacg_Downloader 的接口及签名方案。

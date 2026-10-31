@@ -39,6 +39,7 @@ struct AccountView: View {
                         .disabled(cloud.accountLoading)
                 }
             }
+            AccountWalletSection { showAppLogin = true }
             Section("会员与签到") {
                 NavigationLink(value: Destination.benefits) {
                     Label("会员信息与每日签到", systemImage: "checkmark.seal")
@@ -85,7 +86,7 @@ struct AccountView: View {
         .navigationTitle("我的")
         .navigationDestination(for: Destination.self) { _ in AccountBenefitsView() }
         .accessibilityIdentifier("account-content")
-        .refreshable { await cloud.refreshAccount() }
+        .refreshable { await cloud.refreshAccount(); await AccountWalletState.shared.load() }
         .task { await cloud.refreshAccount() }
         .sheet(isPresented: $showLogin, onDismiss: { Task { await cloud.refreshAccount() } }) { WebLoginView() }
         .sheet(isPresented: $showAbout) { AboutView() }

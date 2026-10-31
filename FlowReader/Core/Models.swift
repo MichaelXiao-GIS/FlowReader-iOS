@@ -17,7 +17,7 @@ struct Book: Identifiable, Codable, Hashable, Sendable {
 }
 
 enum ChapterPurchaseState: String, Codable, Hashable, Sendable {
-    case unknown, purchased, notPurchased, available
+    case unknown, purchased, notPurchased, available, requiresPurchase
 }
 
 struct Chapter: Identifiable, Codable, Hashable, Sendable {

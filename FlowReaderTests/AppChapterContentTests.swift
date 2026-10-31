@@ -5,18 +5,18 @@ final class AppChapterContentTests: XCTestCase {
     private let chapter = Chapter(id: 123, bookID: 456, volumeID: 7, volumeTitle: "测试卷",
                                   title: "原创测试章节", order: 0, isVIP: true)
 
-    private func payload(text: String = "原创测试正文。\n第二段。", encrypted: Any = false, price: Any = 0) -> [String: Any] {
+    private func payload(text: String = "款裔炯绳瓜因。", encrypted: Any = false, price: Any = 0) -> [String: Any] {
         ["chapId": 123, "novelId": 456, "isVip": true,
          "expand": ["content": text, "isContentEncrypted": encrypted, "needFireMoney": price, "originNeedFireMoney": 20]]
     }
 
-    func testAuthorizedPlaintextPreservesCharactersAndMarksOnlyCurrentSessionReadable() throws {
+    func testAuthorizedSubstitutionRestoresTextAndMarksOnlyCurrentSessionReadable() throws {
         let generation = UUID()
-        let source = "第一段：<不是标签>，A &amp; B，👩🏽‍🚀。\r\n第二段。\r第三段。"
+        let source = "雀曙，咸芹。<A> &amp; 👩🏽‍🚀\r\n款裔炯绳瓜因。\r宦。"
         let content = try AppChapterContentProtocol.parse(payload(text: source), chapter: chapter, generation: generation)
-        XCTAssertEqual(content.text, "第一段：<不是标签>，A &amp; B，👩🏽‍🚀。\n第二段。\n第三段。")
+        XCTAssertEqual(content.text, "你好，世界。<A> &amp; 👩🏽‍🚀\n这是测试正文。\n啊。")
         XCTAssertEqual(content.paragraphs.count, 3)
-        XCTAssertEqual(content.sourceFormatVersion, 3)
+        XCTAssertEqual(content.sourceFormatVersion, 4)
         XCTAssertEqual(content.chapter.purchaseState(for: generation), .available)
         XCTAssertEqual(content.chapter.purchaseState(for: UUID()), .unknown)
         XCTAssertFalse(content.chapter.isOwned, "A zero current quote confirms access, not a purchase transaction")
@@ -68,6 +68,8 @@ final class AppChapterContentTests: XCTestCase {
         var free = payload()
         free["isVip"] = false
         let content = try AppChapterContentProtocol.parse(free, chapter: chapter, generation: UUID())
+        XCTAssertEqual(content.text, "这是测试正文。", "Free App chapters need the same single-pass restoration")
+        XCTAssertEqual(content.sourceFormatVersion, 4)
         XCTAssertFalse(content.chapter.isVIP)
         XCTAssertNil(content.chapter.confirmedPurchaseState)
         XCTAssertNil(content.chapter.purchaseSessionGeneration)

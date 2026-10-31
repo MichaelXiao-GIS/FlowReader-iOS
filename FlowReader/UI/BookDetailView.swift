@@ -22,6 +22,8 @@ struct BookDetailView: View {
     @State private var purchaseError: String?
     @State private var purchaseNeedsLogin = false
     @State private var showPurchaseLogin = false
+    @State private var orderingChapter: Chapter?
+    @State private var purchasedReadingChapter: Chapter?
 
     private var isSaved: Bool { library.books.contains { $0.id == book.id } }
     private var readingChapter: Chapter? {
@@ -81,6 +83,14 @@ struct BookDetailView: View {
             ChapterDownloadSheet(book: book, chapters: chapters)
         }
         .sheet(isPresented: $showPurchaseLogin, onDismiss: { Task { await cloud.checkSessionGeneration(); startPurchaseRefresh() } }) { AccountServiceLoginView() }
+        .sheet(item: $orderingChapter, onDismiss: {
+            guard let chapter = purchasedReadingChapter else { return }
+            purchasedReadingChapter = nil
+            startPurchaseRefresh()
+            readingSession.open(ReadingRoute(book: book, chapters: chapters, initialChapter: chapter))
+        }) { chapter in
+            ChapterPurchaseSheet(book: book, chapter: chapter) { purchasedReadingChapter = $0 }
+        }
         .task(id: cloud.sessionGeneration) { await loadBook() }
         .task(id: cloud.sessionGeneration) { if book.id > 0 { await cloud.loadHistoryIfNeeded() } }
         .onChange(of: contentKind) { _, kind in
@@ -110,7 +120,7 @@ struct BookDetailView: View {
     private var actions: some View {
         HStack(spacing: 12) {
             if let first = readingChapter {
-                Button { readingSession.open(ReadingRoute(book: book, chapters: chapters, initialChapter: first)) } label: {
+                Button { openChapter(first) } label: {
                     Label(library.localBook(id: book.id)?.progress == nil ? "开始阅读" : "继续阅读", systemImage: "book.pages")
                         .frame(maxWidth: .infinity).padding(.vertical, 5)
                 }
@@ -185,7 +195,7 @@ struct BookDetailView: View {
                         .foregroundStyle(FlowTheme.accent)
                         .padding(.top, 18).padding(.bottom, 10)
                     ForEach(chapters.filter { $0.volumeTitle == volume }) { chapter in
-                        Button { readingSession.open(ReadingRoute(book: book, chapters: chapters, initialChapter: chapter)) } label: {
+                        Button { openChapter(chapter) } label: {
                             HStack(spacing: 12) {
                                 Text(chapter.title).font(.subheadline).foregroundStyle(.primary)
                                     .multilineTextAlignment(.leading)
@@ -197,10 +207,25 @@ struct BookDetailView: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("book-chapter-\(chapter.id)")
                         Divider().opacity(0.5)
                     }
                 }
             }
+        }
+    }
+
+    private func openChapter(_ chapter: Chapter) {
+        let state = cloud.purchaseState(for: chapter)
+        if ChapterCommerceClient.usesUITestFixture && chapter.id == chapters.first?.id {
+            orderingChapter = chapter
+        } else if library.cachedContent(chapter: chapter) != nil {
+            // A valid local download remains readable even if today's remote quote is positive.
+            readingSession.open(ReadingRoute(book: book, chapters: chapters, initialChapter: chapter))
+        } else if state == .notPurchased || state == .requiresPurchase {
+            orderingChapter = chapter
+        } else {
+            readingSession.open(ReadingRoute(book: book, chapters: chapters, initialChapter: chapter))
         }
     }
 

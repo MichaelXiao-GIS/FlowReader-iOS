@@ -37,6 +37,8 @@ struct DownloadJob: Identifiable, Codable, Hashable {
 enum LibraryError: LocalizedError {
     case emptyFile, unsupportedEncoding, tooLarge, noChapters
     case outdatedVIPCache(String)
+    case invalidCachedContent, unavailableDownloadedChapter
+    case cacheRepairFailed(String)
     var errorDescription: String? {
         switch self {
         case .emptyFile: return "文件中没有可阅读的文字。"
@@ -44,6 +46,9 @@ enum LibraryError: LocalizedError {
         case .tooLarge: return "请选择小于 50 MB 的文本文件。"
         case .noChapters: return "请先下载至少一个章节再导出。"
         case .outdatedVIPCache(let reason): return "此 VIP 章节的旧缓存需要重新识别，原文件已保留。\(reason)"
+        case .invalidCachedContent: return "本地章节与目录不一致，原文件已保留，请重新下载本章。"
+        case .unavailableDownloadedChapter: return "部分已下载章节暂时无法读取，请重新下载后再导出。"
+        case .cacheRepairFailed(let reason): return "旧版正文缓存暂时无法修复，原文件已保留。\(reason)"
         }
     }
 }
@@ -99,17 +104,22 @@ final class LibraryStore {
     }
 
     func cachedContent(chapter: Chapter) -> ChapterContent? {
-        guard let data = try? Data(contentsOf: contentURL(bookID: chapter.bookID, chapterID: chapter.id)) else { return nil }
-        return try? JSONDecoder().decode(ChapterContent.self, from: data)
+        do {
+            guard let cached = try readCachedContent(chapter: chapter), !requiresVIPRefresh(cached, chapter: chapter) else { return nil }
+            return cached
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
     }
 
     func content(chapter: Chapter) async throws -> ChapterContent {
-        if let cached = cachedContent(chapter: chapter) {
-            guard chapter.bookID > 0, chapter.id > 0, chapter.isVIP,
-                  (cached.sourceFormatVersion ?? 0) < 2 else { return cached }
+        if let cached = try readCachedContent(chapter: chapter) {
+            guard requiresVIPRefresh(cached, chapter: chapter) else { return cached }
             do {
                 let refreshed = try await fetchContent(chapter)
                 try Task.checkCancellation()
+                try validateIdentity(refreshed, chapter: chapter)
                 // Replace only after a successful decode; an offline failure leaves the original file intact.
                 try JSONEncoder().encode(refreshed).write(to: contentURL(bookID: chapter.bookID, chapterID: chapter.id), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
                 return refreshed
@@ -121,6 +131,7 @@ final class LibraryStore {
     }
 
     func store(content: ChapterContent, book: Book) throws {
+        guard content.chapter.bookID == book.id else { throw LibraryError.invalidCachedContent }
         let folder = root.appendingPathComponent(String(book.id), isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try JSONEncoder().encode(content).write(to: contentURL(bookID: book.id, chapterID: content.chapter.id), options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
@@ -214,11 +225,12 @@ final class LibraryStore {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    func downloadedContent(bookID: Int) -> [ChapterContent] {
+    func downloadedContent(bookID: Int) throws -> [ChapterContent] {
         guard let local = localBook(id: bookID) else { return [] }
-        return local.chapters.sorted { $0.order < $1.order }.compactMap { chapter in
-            guard local.downloadedIDs.contains(chapter.id) else { return nil }
-            return cachedContent(chapter: chapter)
+        return try local.chapters.sorted { $0.order < $1.order }.filter { local.downloadedIDs.contains($0.id) }.map { chapter in
+            guard let cached = try readCachedContent(chapter: chapter) else { throw LibraryError.unavailableDownloadedChapter }
+            guard !requiresVIPRefresh(cached, chapter: chapter) else { throw LibraryError.outdatedVIPCache("请联网打开本章后重试。") }
+            return cached
         }
     }
 
@@ -292,17 +304,30 @@ final class LibraryStore {
             guard let self else { return }
             defer { self.worker = nil; self.persist(); self.startNext() }
             do {
+                // Persisted completion records describe file presence, not decoder compatibility.
+                // Revalidate once per run, including chapters added while this job is active.
+                var verifiedIDs: Set<Int> = []
                 while let index = self.jobs.firstIndex(where: { $0.id == next.id }), self.jobs[index].status == .downloading {
                     try Task.checkCancellation()
-                    guard let chapter = self.jobs[index].chapters.first(where: { !self.jobs[index].completedIDs.contains($0.id) }) else {
+                    guard let chapter = self.jobs[index].chapters.first(where: { !self.jobs[index].completedIDs.contains($0.id) || !verifiedIDs.contains($0.id) }) else {
                         self.jobs[index].status = .complete
                         return
+                    }
+                    if self.jobs[index].completedIDs.remove(chapter.id) != nil {
+                        if let cached = try self.readCachedContent(chapter: chapter), !self.requiresVIPRefresh(cached, chapter: chapter) {
+                            self.jobs[index].completedIDs.insert(chapter.id)
+                            verifiedIDs.insert(chapter.id)
+                            await Task.yield()
+                            continue
+                        }
+                        self.persist()
                     }
                     let result = try await self.content(chapter: chapter)
                     try Task.checkCancellation()
                     guard let current = self.jobs.firstIndex(where: { $0.id == next.id }), self.jobs[current].status == .downloading else { return }
                     try self.store(content: result, book: next.book)
                     self.jobs[current].completedIDs.insert(chapter.id)
+                    verifiedIDs.insert(chapter.id)
                     self.persist()
                     try await Task.sleep(for: .milliseconds(600))
                 }
@@ -319,6 +344,32 @@ final class LibraryStore {
 
     private func contentURL(bookID: Int, chapterID: Int) -> URL {
         root.appendingPathComponent(String(bookID), isDirectory: true).appendingPathComponent("\(chapterID).json")
+    }
+
+    private func validateIdentity(_ content: ChapterContent, chapter: Chapter) throws {
+        guard content.chapter.bookID == chapter.bookID, content.chapter.id == chapter.id else { throw LibraryError.invalidCachedContent }
+    }
+
+    private func requiresVIPRefresh(_ content: ChapterContent, chapter: Chapter) -> Bool {
+        chapter.bookID > 0 && chapter.id > 0 && (chapter.isVIP || content.chapter.isVIP) && (content.sourceFormatVersion ?? 0) < 2
+    }
+
+    private func readCachedContent(chapter: Chapter) throws -> ChapterContent? {
+        let url = contentURL(bookID: chapter.bookID, chapterID: chapter.id)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        var cached = try JSONDecoder().decode(ChapterContent.self, from: Data(contentsOf: url))
+        try validateIdentity(cached, chapter: chapter)
+        // v3 uniquely identifies App transport text saved without the substitution decoder.
+        // The mapping is not idempotent: OCR (v2), local imports and decoded v4 must never run through it.
+        guard chapter.bookID > 0, chapter.id > 0, cached.sourceFormatVersion == 3 else { return cached }
+        do {
+            cached.text = try AppContentDecoder.decode(cached.text)
+            cached.sourceFormatVersion = AppContentDecoder.formatVersion
+            // Publish the corrected content only after the atomic replacement succeeds. A failure
+            // leaves the original v3 file available for a later retry, never a half-migrated v4 file.
+            try JSONEncoder().encode(cached).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            return cached
+        } catch { throw LibraryError.cacheRepairFailed(error.localizedDescription) }
     }
 
     private func progressURL(bookID: Int) -> URL {

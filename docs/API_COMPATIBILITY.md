@@ -27,13 +27,22 @@ APK `PocketApi` 的方法注解和 `ShelfViewModel` 调用确认 `GET /user/Pock
 
 网页 VIP 资料使用参考实现中的 `pages.sfacg.com/api/User?expand=newVip`，依据 `newVip.isNewVip` 选择新 VIP 等级或 `api/common/vipInfo` 的旧 VIP 等级。App 用户资料的 expand 列表包含 `vipInfo,newVip,member,dianyamember`，也见于所提供 APK。
 
-VIP 等级、付费会员资格和单章订阅权限是不同概念。只显示已经确认含义的服务器字段，缺失状态不推断为已开通或未开通。已连接 App 账号时，正文使用 `GET /Chaps/{chapterID}?expand=content&autoOrder=false`。接口注解与参考项目证明读取路径，认证只读响应确认 `expand.content` 是正文字符串，`expand.isContentEncrypted` 与 `expand.needFireMoney` 描述返回格式和当前权限。客户端核对章节与作品编号，仅接受明确未加密、当前价格为零的非空正文，保留文字中的字面量尖括号、实体和标点。未知格式或缺失权限字段拒绝作为正文显示，不尝试解密或自动购买。请求始终显式关闭 `autoOrder`。
+VIP 等级、付费会员资格和单章订阅权限是不同概念。只显示已经确认含义的服务器字段，缺失状态不推断为已开通或未开通。已连接 App 账号时，正文使用 `GET /Chaps/{chapterID}?expand=content&autoOrder=false`。`expand.content` 是 App 传输正文，`isContentEncrypted=false` 仍含单字置换，不能直接视为明文。1.2.0–1.3.0 漏掉此步骤；1.4.0 在核对章节/作品编号、明确未加密、当前价格为零后，使用上游 `sfacg-content-dictionary.json` 的 3760 条映射逐 Unicode scalar 单次还原。算法见 `adapters/storage/settings.rs::decode_api_content`，免费章与 VIP 章都需要处理。仅处理服务端已经授权的内容，不处理未知加密格式；标点、空白、emoji、字面量 HTML 与实体保留。请求始终显式关闭 `autoOrder`。
 
-没有 App 会话时，原有网页兼容阅读仍可通过官方网页会话取得授权图片，再由本机 Apple Vision 识别。App 账号请求失败不会静默切换到另一个网页账号。新 App 明文缓存使用格式版本 3；旧格式缓存按现有读取逻辑重新验证。
+没有 App 会话时，原有网页兼容阅读仍可通过官方网页会话取得授权图片，再由本机 Apple Vision 识别。App 账号请求失败不会静默切换到另一个网页账号。已还原 App 正文使用格式版本 4。仅标记为 3 的正编号 App 章节缓存本地转换一次，原子保存成功后才返回；免费章、VIP、下载重跑及导出都经过此入口。网页图片识别版本 2、本地导入和版本 4 不重复还原，失败保留旧文件并明确报错。
 
-目录权限通过同账号的认证 App 请求读取。明确的 `has=true` 显示“已购买”；当前账号 `needFireMoney` 为有效数值零，或同一会话已成功读取正文时显示“可阅读”。真实对照确认同一章节在认证请求中为零价、匿名请求中为正价。零价也可能来自赠阅或活动，不能据此捏造购买交易。“可阅读”与“已购买”因此分别显示，只有明确未购状态才画锁；缺失或异常字段显示普通 VIP 标记。权限只保留在当前会话内，旧目录缓存和账号余额不作为购买证明。
+目录权限通过同账号的认证 App 请求读取。明确的 `has=true` 显示“已购买”；当前账号 `needFireMoney` 为有效数值零，或同一会话已成功读取正文时显示“可阅读”；有效正价且缺失 `has` 时显示“需订阅”。APK 的 `Chapter` 模型没有 `has/owned/purchased` 字段，目录调用中的 `expand=originNeedFireMoney` 提供原价，不能作为购买记录。零价也可能来自赠阅或活动，不能据此捏造购买交易。“可阅读”“需订阅”与“已购买”分别显示；缺失或异常价格字段保持未知。权限只保留在当前会话内，旧目录缓存和账号余额不作为购买证明。
 
-VIP 图片解析参考上游 `src-tauri/ocr-worker/ocr_worker.py` 的多帧、38 像素行高、顶部 5 像素留白及拼音层处理。原生实现逐帧、分块识别，去除拼音注释区域并保留深色正文。直接把整张图片交给文字识别会混入拼音和背景，并可能丢失后续帧。新的缓存格式版本为 2，旧 VIP 缓存下次读取时重新获取并识别；更新失败时保留原文件并提示重试，不把旧乱码重新展示为正文。
+## 余额与单章订阅
+
+- APK `AccountApi.getUserMoney`：`GET /user/money`，`fireMoneyRemain` 为火券，`couponsRemain` 为代券。`GET /user?expand=welfareCoin` 的 `expand.welfareCoin` 为金币。三者使用整数原值，缺失或非法值不显示为零。实际 money 响应不含 `accountId`；通过相同会话及请求前后的 `/user` 身份绑定，若响应带编号则必须匹配。
+- APK 内置说明确认火券、代券可合计自动结算；金币不能计入章节订阅余额。不假定代券、火券的具体扣减顺序，不自行换算人民币。
+- APK `NovelApi.orderNovelChaps` 和上游 `src/client/Sfacg/api/client.ts` 均确认 `POST /novels/{id}/orderedchaps`。单章 JSON 为 `chapIds: [chapterID]`、`orderAll: false`、`autoOrder: false`、`orderType: "readOrder"`。不传没有证据的 `useCoupon`，不自动选择额外优惠券，不开启整书或后续章节自动订阅。
+- 先从认证目录读取当前报价，绑定章节、作品、账号、会话及有效期；用户明确确认后重新读取身份、价格与余额。已可阅读则不下单，价格变化要求重新确认，未知或不足余额不提交。
+- 单账号提交串行、确认凭据仅用一次。发送前持久记录待确认订单；超时、取消后可能已发出、服务器异常或含糊回执都不自动重试，重新打开或重启也不重复下单。只有只读确认可阅读后才清除待确认标记；确定未发出的请求或明确拒绝可解除标记。购买状态以服务器回读为准。
+- 实际扣款不作为自动化或真实账号验证的一部分；购买提交、拒绝、重复点击与不确定结果使用注入测试验证。真实账号仅用于读取余额、报价、权限与已授权正文。
+
+VIP 图片解析参考上游 `src-tauri/ocr-worker/ocr_worker.py` 的多帧、38 像素行高、顶部 5 像素留白及拼音层处理。原生实现逐帧、分块识别，去除拼音注释区域并保留深色正文。直接把整张图片交给文字识别会混入拼音和背景，并可能丢失后续帧。该网页识别路径采用缓存格式版本 2，更早的网页 VIP 缓存下次读取时重新获取并识别；更新失败时保留原文件并提示重试，不把旧乱码重新展示为正文。
 
 ## 每日签到
 

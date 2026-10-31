@@ -48,9 +48,10 @@ enum AppChapterContentProtocol {
         guard let price = integer(expansion["needFireMoney"]) else { throw SFAPIError.invalidResponse }
         guard price == 0 else { throw SFAPIError.subscriptionRequired }
         guard let raw = expansion["content"] as? String else { throw SFAPIError.invalidResponse }
-        // expand.content is plaintext. Preserve literal angle brackets, entities, emoji and punctuation.
-        // Converting it through an HTML stripper would silently remove legitimate story text.
-        let text = raw.replacingOccurrences(of: "\r\n", with: "\n")
+        // isContentEncrypted describes an additional transport format. Even false responses
+        // still need the App's character substitution restored, for free and VIP chapters alike.
+        // Preserve literal angle brackets, entities, emoji and punctuation; this is not HTML.
+        let text = try AppContentDecoder.decode(raw).replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { throw SFAPIError.emptyContent }
@@ -63,7 +64,7 @@ enum AppChapterContentProtocol {
             authorized.confirmedPurchaseState = nil
             authorized.purchaseSessionGeneration = nil
         }
-        return ChapterContent(chapter: authorized, text: text, sourceFormatVersion: 3)
+        return ChapterContent(chapter: authorized, text: text, sourceFormatVersion: AppContentDecoder.formatVersion)
     }
 
     private static func integer(_ value: Any?) -> Int? {

@@ -22,13 +22,21 @@ extension SFAPI {
         let request = try appRequest(path: "/novels/\(bookID)/dirs", query: [:], body: nil, includeSession: true, method: "GET")
         let (data, response) = try await send(request, acceptServerErrors: true, expectedGeneration: generation)
         let payload = try Self.parseAppResponse(data, response: response)
-        var states = try ChapterPurchaseParser.states(from: payload)
-        for (id, state) in verified where states[id] != .purchased { states[id] = state }
+        let fresh = try ChapterPurchaseParser.states(from: payload)
+        let states = ChapterPurchaseParser.merging(verified: verified, into: fresh)
         return ChapterPurchaseSnapshot(states: states, generation: generation)
     }
 }
 
 enum ChapterPurchaseParser {
+    /// A past successful read only fills unknown entries. Current server permissions win,
+    /// including a promotion that has ended or a now-positive subscription price.
+    static func merging(verified: [Int: ChapterPurchaseState], into fresh: [Int: ChapterPurchaseState]) -> [Int: ChapterPurchaseState] {
+        var result = fresh
+        for (id, state) in verified where result[id] == nil || result[id] == .unknown { result[id] = state }
+        return result
+    }
+
     static func states(from payload: Any) throws -> [Int: ChapterPurchaseState] {
         guard let root = payload as? [String: Any],
               let volumes = (root["volumeList"] ?? root["volumes"]) as? [[String: Any]] else { throw SFAPIError.invalidResponse }
@@ -41,6 +49,7 @@ enum ChapterPurchaseParser {
                 // A zero account quote confirms readability, not the transaction that granted it.
                 else if nonnegativePrice(row["needFireMoney"]) == 0 { result[id] = .available }
                 else if ownership == false { result[id] = .notPurchased }
+                else if ownership == nil, row["has"] == nil, let price = nonnegativePrice(row["needFireMoney"]), price > 0 { result[id] = .requiresPurchase }
                 else { result[id] = .unknown }
             }
         }

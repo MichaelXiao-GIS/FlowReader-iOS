@@ -65,7 +65,9 @@ final class LibraryTests: XCTestCase {
             _ = try await offline.content(chapter: chapter)
             XCTFail("Old OCR must not silently return as corrected text")
         } catch LibraryError.outdatedVIPCache { }
-        XCTAssertEqual(offline.cachedContent(chapter: chapter)?.text, "需要更新的原创测试文字")
+        XCTAssertNil(offline.cachedContent(chapter: chapter), "An obsolete OCR cache must not bypass validation through the offline accessor")
+        let preserved = try JSONDecoder().decode(ChapterContent.self, from: Data(contentsOf: root.appendingPathComponent("20/101.json")))
+        XCTAssertEqual(preserved.text, "需要更新的原创测试文字")
         let online = LibraryStore(directory: root, fetchContent: { chapter in
             ChapterContent(chapter: chapter, text: "已更新的原创测试文字", sourceFormatVersion: 2)
         })
@@ -73,6 +75,138 @@ final class LibraryTests: XCTestCase {
         let reopened = LibraryStore(directory: root)
         XCTAssertEqual(reopened.cachedContent(chapter: chapter)?.sourceFormatVersion, 2)
         XCTAssertEqual(reopened.cachedContent(chapter: chapter)?.text, "已更新的原创测试文字")
+    }
+
+    func testAppV3CacheMigratesFreeAndVIPExactlyOnceOffline() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = LibraryStore(directory: root, fetchContent: { _ in
+            XCTFail("Repairing saved transport text must not require authentication or download")
+            throw URLError(.notConnectedToInternet)
+        })
+        let book = Book(id: 20, title: "缓存转换原创测试", author: "原创测试")
+        let chapters = [false, true].enumerated().map { Chapter(id: 101 + $0.offset, bookID: 20, volumeID: 1, volumeTitle: "正文", title: "测试章节", order: $0.offset, isVIP: $0.element) }
+        library.save(book: book, chapters: chapters)
+        for chapter in chapters {
+            try library.store(content: ChapterContent(chapter: chapter, text: "宦。\n宦🌊", sourceFormatVersion: 3), book: book)
+            let repaired = try await library.content(chapter: chapter)
+            XCTAssertEqual(repaired.text, "啊。\n啊🌊")
+            XCTAssertEqual(repaired.sourceFormatVersion, 4)
+            let reopened = LibraryStore(directory: root)
+            let readAgain = try await reopened.content(chapter: chapter)
+            XCTAssertEqual(readAgain.text, repaired.text, "The character permutation is not idempotent and must never run twice")
+            XCTAssertEqual(readAgain.sourceFormatVersion, 4)
+        }
+    }
+
+    func testCacheRepairDoesNotTransformOCRLocalOrAlreadyDecodedText() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = LibraryStore(directory: root, fetchContent: { _ in throw URLError(.notConnectedToInternet) })
+        let cases: [(Int, Int?, Bool)] = [(20, 2, true), (21, 4, true), (22, nil, false), (-23, 3, true)]
+        for (bookID, version, isVIP) in cases {
+            let book = Book(id: bookID, title: "来源保护测试", author: "原创测试")
+            let chapter = Chapter(id: bookID * 10, bookID: bookID, volumeID: 1, volumeTitle: "正文", title: "章节", order: 0, isVIP: isVIP)
+            library.save(book: book, chapters: [chapter])
+            try library.store(content: ChapterContent(chapter: chapter, text: "宦。啊。🌊", sourceFormatVersion: version), book: book)
+            let content = try await library.content(chapter: chapter)
+            XCTAssertEqual(content.text, "宦。啊。🌊")
+            XCTAssertEqual(content.sourceFormatVersion, version)
+        }
+    }
+
+    func testPreviouslyCompletedDownloadRevalidatesAndRepairsCachedChapters() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let book = Book(id: 20, title: "下载恢复测试", author: "原创测试")
+        let chapter = Chapter(id: 101, bookID: 20, volumeID: 1, volumeTitle: "正文", title: "章节", order: 0)
+        let original = LibraryStore(directory: root)
+        original.save(book: book, chapters: [chapter])
+        try original.store(content: ChapterContent(chapter: chapter, text: "宦🌊", sourceFormatVersion: 3), book: book)
+        let completed = DownloadJob(book: book, chapters: [chapter], completedIDs: [chapter.id], status: .complete)
+        try JSONEncoder().encode([completed]).write(to: root.appendingPathComponent("downloads.json"))
+        let reopened = LibraryStore(directory: root, fetchContent: { _ in
+            XCTFail("An already downloaded v3 chapter repairs locally")
+            throw URLError(.notConnectedToInternet)
+        })
+        reopened.download(book: book, chapters: [chapter])
+        for _ in 0..<100 where reopened.jobs.first?.status != .complete {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(reopened.jobs.first?.status, .complete)
+        XCTAssertEqual(reopened.jobs.first?.completedIDs, [chapter.id])
+        let stored = try JSONDecoder().decode(ChapterContent.self, from: Data(contentsOf: root.appendingPathComponent("20/101.json")))
+        XCTAssertEqual(stored.sourceFormatVersion, 4)
+        XCTAssertEqual(stored.text, "啊🌊")
+    }
+
+    func testEveryExportRepairsV3AndDoesNotSilentlyOmitMissingDownloadedChapters() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = LibraryStore(directory: root)
+        let book = Book(id: 20, title: "导出来源测试", author: "原创测试")
+        let chapter = Chapter(id: 101, bookID: 20, volumeID: 1, volumeTitle: "正文", title: "章节", order: 0, isVIP: true)
+        library.save(book: book, chapters: [chapter])
+        for format in ExportFormat.allCases {
+            try library.store(content: ChapterContent(chapter: chapter, text: "宦🌊", sourceFormatVersion: 3), book: book)
+            let url = try BookExporter.export(book: book, chapters: library.downloadedContent(bookID: book.id), format: format)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let data = try Data(contentsOf: url)
+            XCTAssertNotNil(data.range(of: Data("啊🌊".utf8)))
+            XCTAssertNil(data.range(of: Data("宦🌊".utf8)))
+        }
+        try FileManager.default.removeItem(at: root.appendingPathComponent("20/101.json"))
+        XCTAssertThrowsError(try library.downloadedContent(bookID: book.id)) { error in
+            guard case LibraryError.unavailableDownloadedChapter = error else { return XCTFail("Unexpected error: \(error)") }
+        }
+    }
+
+    func testRepairWriteFailurePreservesV3FileUntilRetrySucceeds() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let folder = root.appendingPathComponent("20")
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let library = LibraryStore(directory: root)
+        let book = Book(id: 20, title: "原子修复测试", author: "原创测试")
+        let chapter = Chapter(id: 101, bookID: 20, volumeID: 1, volumeTitle: "正文", title: "章节", order: 0)
+        library.save(book: book, chapters: [chapter])
+        try library.store(content: ChapterContent(chapter: chapter, text: "宦🌊", sourceFormatVersion: 3), book: book)
+        let url = folder.appendingPathComponent("101.json")
+        let original = try Data(contentsOf: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: folder.path)
+        do {
+            _ = try await library.content(chapter: chapter)
+            XCTFail("A failed atomic migration must not publish corrected text as a saved v4 cache")
+        } catch LibraryError.cacheRepairFailed { }
+        XCTAssertEqual(try Data(contentsOf: url), original)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
+        let repaired = try await library.content(chapter: chapter)
+        XCTAssertEqual(repaired.text, "啊🌊")
+        XCTAssertEqual(repaired.sourceFormatVersion, 4)
+    }
+
+    func testCachedIdentityAndVIPProvenanceCannotBeBypassedByCatalogMetadata() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = LibraryStore(directory: root, fetchContent: { _ in throw URLError(.notConnectedToInternet) })
+        let book = Book(id: 20, title: "目录一致性测试", author: "原创测试")
+        let chapter = Chapter(id: 101, bookID: 20, volumeID: 1, volumeTitle: "正文", title: "章节", order: 0)
+        var oldVIP = chapter; oldVIP.isVIP = true
+        library.save(book: book, chapters: [chapter])
+        try library.store(content: ChapterContent(chapter: oldVIP, text: "旧版图片识别文字"), book: book)
+        do { _ = try await library.content(chapter: chapter); XCTFail("Cached VIP provenance must survive a stale free catalog flag") }
+        catch LibraryError.outdatedVIPCache { }
+        XCTAssertThrowsError(try library.downloadedContent(bookID: book.id))
+        var anotherChapter = chapter; anotherChapter.id = 999
+        let unrelated = try JSONEncoder().encode(ChapterContent(chapter: anotherChapter, text: "宦🌊", sourceFormatVersion: 3))
+        let url = root.appendingPathComponent("20/101.json")
+        try unrelated.write(to: url)
+        do { _ = try await library.content(chapter: chapter); XCTFail("A file with another chapter's identity must not render") }
+        catch LibraryError.invalidCachedContent { }
+        XCTAssertThrowsError(try library.downloadedContent(bookID: book.id))
+        XCTAssertEqual(try Data(contentsOf: url), unrelated)
     }
 
     func testPersistenceImportAndExports() throws {

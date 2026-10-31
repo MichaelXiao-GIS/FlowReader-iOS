@@ -46,7 +46,6 @@ struct ReaderChrome<More: View>: View {
 
                 VStack(spacing: 0) {
                     tool("章节目录", symbol: "list.bullet", id: "reader-contents", action: onContents)
-                    tool("本书书签", symbol: "bookmark", id: "reader-bookmarks", action: onBookmarks)
                     tool(speaking ? "暂停朗读" : "朗读本章", symbol: speaking ? "pause.fill" : "speaker.wave.2",
                          id: "reader-read-aloud", action: onSpeak).disabled(!contentAvailable)
                     tool("阅读设置", symbol: "textformat.size", id: "reader-settings", action: onSettings)

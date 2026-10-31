@@ -11,7 +11,72 @@ final class FlowReaderUITests: XCTestCase {
         app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         if name.contains("testImmersiveCurlAndLandscapeSpread") || name.contains("testBooksControlsBookmarksAndProgress") || name.contains("testHomeAndColdLaunchRestoreReading") { app.launchArguments.append("--long-reader-fixture") }
+        if name.contains("testOfflineWalletAndSingleChapterConfirmation") { app.launchArguments.append("--chapter-purchase-fixture") }
         app.launch()
+    }
+
+    func testOfflineWalletAndSingleChapterConfirmation() throws {
+        // This explicit fixture replaces every wallet/quote/order closure. It cannot call the live API.
+        selectTab("我的")
+        let fireMoney = app.descendants(matching: .any)["wallet-fire-money"].firstMatch
+        reveal(fireMoney)
+        XCTAssertTrue(fireMoney.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["wallet-coupons"].firstMatch.exists)
+        XCTAssertTrue(app.descendants(matching: .any)["wallet-gold-coins"].firstMatch.exists)
+        capture("31-离线账号余额")
+        selectTab("发现")
+        let book = app.buttons["book--100"]
+        XCTAssertTrue(book.waitForExistence(timeout: 10))
+        book.tap()
+        let start = app.buttons["start-reading"]
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        start.tap()
+        let review = app.buttons["purchase-review"]
+        XCTAssertTrue(app.descendants(matching: .any)["purchase-price"].firstMatch.waitForExistence(timeout: 5))
+        capture("32-单章价格确认前")
+        reveal(review)
+        XCTAssertTrue(review.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["离线测试读者"].exists)
+        review.tap()
+        let confirm = app.buttons.matching(identifier: "purchase-confirm").firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        capture("33-原生购买确认")
+        dismissPurchaseConfirmation()
+        XCTAssertTrue(confirm.waitForNonExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["purchase-read"].exists, "取消确认不能解锁章节")
+        review.tap()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.tap()
+        let read = app.buttons["purchase-read"]
+        XCTAssertTrue(read.waitForExistence(timeout: 5))
+        XCTAssertFalse(review.exists, "已确认可读后不再出现重复购买入口")
+        read.tap()
+        XCTAssertTrue(app.staticTexts["reader-paragraph-0"].waitForExistence(timeout: 10))
+    }
+
+    private func dismissPurchaseConfirmation() {
+        let cancel = app.buttons.matching(identifier: "purchase-cancel").firstMatch
+        if cancel.exists && cancel.isHittable { cancel.tap(); return }
+        let labelledCancel = app.buttons.matching(NSPredicate(format: "label == %@", "取消")).firstMatch
+        if labelledCancel.exists && labelledCancel.isHittable { labelledCancel.tap(); return }
+
+        // The native popover form of confirmationDialog omits its cancel action.
+        // Dismiss through its backdrop, choosing a point outside the actual popover.
+        let popover = app.popovers.firstMatch
+        let regions = app.otherElements.matching(identifier: "PopoverDismissRegion").allElementsBoundByIndex
+        guard popover.exists, let region = regions.last else { return XCTFail("应有原生取消按钮或浮层关闭区域") }
+        let bounds = app.windows.firstMatch.frame
+        let safeBounds = bounds.insetBy(dx: 24, dy: 24)
+        // Side midpoints avoid status/Dynamic Island touches being consumed by the system.
+        let candidates = [CGPoint(x: safeBounds.minX + 1, y: safeBounds.midY),
+                          CGPoint(x: safeBounds.maxX - 1, y: safeBounds.midY),
+                          CGPoint(x: safeBounds.midX, y: safeBounds.minY + max(72, safeBounds.height * 0.12)),
+                          CGPoint(x: safeBounds.midX, y: safeBounds.maxY - 48)]
+        guard let point = candidates.first(where: { safeBounds.contains($0) && region.frame.contains($0) && !popover.frame.insetBy(dx: -12, dy: -12).contains($0) }) else {
+            return XCTFail("未找到确认浮层之外的原生关闭区域")
+        }
+        region.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: point.x - region.frame.minX, dy: point.y - region.frame.minY)).tap()
     }
 
     func testReadChangeTypographyAndChapterThenReturnToLibrary() throws {
@@ -195,7 +260,10 @@ final class FlowReaderUITests: XCTestCase {
         XCTAssertNotEqual(progress.value as? String, initialProgress, "底部滑条必须改变当前章节的真实位置")
         XCTAssertEqual(bookmark.label, "添加此处书签", "跳转后应离开原书签位置")
         capture("21-拖动章节进度")
-        app.buttons["reader-bookmarks"].tap()
+        app.buttons["reader-more"].tap()
+        let bookmarkList = app.buttons["reader-bookmarks-menu"]
+        XCTAssertTrue(bookmarkList.waitForExistence(timeout: 5))
+        bookmarkList.tap()
         let saved = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "reader-bookmark-")).firstMatch
         XCTAssertTrue(saved.waitForExistence(timeout: 5))
         capture("22-本机书签")
@@ -374,6 +442,12 @@ final class FlowReaderUITests: XCTestCase {
 
     private func selectTab(_ label: String) {
         let candidates = [app.tabBars.buttons[label], app.buttons[label], app.cells.containing(.staticText, identifier: label).firstMatch, app.staticTexts[label]]
+        if let target = candidates.first(where: { $0.exists && $0.isHittable }) {
+            target.tap()
+            return
+        }
+        // Returning from a sheet can leave the native bar minimized after scrolling.
+        app.swipeDown()
         if let target = candidates.first(where: { $0.exists && $0.isHittable }) {
             target.tap()
             return

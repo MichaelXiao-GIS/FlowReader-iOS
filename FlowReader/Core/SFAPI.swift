@@ -351,14 +351,21 @@ actor SFAPI {
         return text
     }
 
-    func send(_ request: URLRequest, acceptServerErrors: Bool = false, expectedGeneration: UUID? = nil) async throws -> (Data, HTTPURLResponse) {
-        try Task.checkCancellation()
-        let now = Date()
-        let wait = max(0, lastRequest.timeIntervalSince(now) + 0.3)
-        // Reserve before awaiting to keep concurrent actor callers spaced apart.
-        lastRequest = now.addingTimeInterval(wait)
-        if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
-        if let expectedGeneration, expectedGeneration != identityGeneration { throw CancellationError() }
+    func send(_ request: URLRequest, acceptServerErrors: Bool = false, expectedGeneration: UUID? = nil,
+              reportUnsentFailure: Bool = false) async throws -> (Data, HTTPURLResponse) {
+        do {
+            try Task.checkCancellation()
+            let now = Date()
+            let wait = max(0, lastRequest.timeIntervalSince(now) + 0.3)
+            // Reserve before awaiting to keep concurrent actor callers spaced apart.
+            lastRequest = now.addingTimeInterval(wait)
+            if wait > 0 { try await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
+            try Task.checkCancellation()
+            if let expectedGeneration, expectedGeneration != identityGeneration { throw CancellationError() }
+        } catch {
+            if reportUnsentFailure { throw SFRequestNotSent(underlying: error) }
+            throw error
+        }
         let (data, response) = try await session.data(for: request)
         if let expectedGeneration, expectedGeneration != identityGeneration { throw CancellationError() }
         guard let http = response as? HTTPURLResponse else { throw SFAPIError.invalidResponse }
@@ -458,4 +465,9 @@ private final class SFRedirectPolicy: NSObject, URLSessionTaskDelegate, @uncheck
         }
         completionHandler(safeRequest)
     }
+}
+
+/// Only emitted before URLSession has been asked to dispatch the request.
+struct SFRequestNotSent: Error {
+    let underlying: Error
 }

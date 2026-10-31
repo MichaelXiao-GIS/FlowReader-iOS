@@ -48,7 +48,20 @@ final class ChapterPurchaseTests: XCTestCase {
         ]
         let result = try ChapterPurchaseParser.states(from: ["volumeList": [["chapterList": rows]]])
         XCTAssertEqual(result.count, rows.count)
-        XCTAssertEqual(Set(result.values), [.unknown])
+        XCTAssertEqual(result[1], .requiresPurchase, "A positive current quote proves payment is required, not transaction history")
+        XCTAssertTrue(result.filter { $0.key != 1 }.values.allSatisfy { $0 == .unknown })
+    }
+
+    func testCurrentCataloguePermissionsWinOverEarlierSuccessfulReads() {
+        let fresh: [Int: ChapterPurchaseState] = [1: .requiresPurchase, 2: .notPurchased, 3: .purchased, 4: .available, 5: .unknown]
+        let verified = Dictionary(uniqueKeysWithValues: (1...6).map { ($0, ChapterPurchaseState.available) })
+        let merged = ChapterPurchaseParser.merging(verified: verified, into: fresh)
+        XCTAssertEqual(merged[1], .requiresPurchase)
+        XCTAssertEqual(merged[2], .notPurchased)
+        XCTAssertEqual(merged[3], .purchased)
+        XCTAssertEqual(merged[4], .available)
+        XCTAssertEqual(merged[5], .available)
+        XCTAssertEqual(merged[6], .available)
     }
 
     func testMalformedCatalogueCannotConfirmAnEmptyPurchaseList() {

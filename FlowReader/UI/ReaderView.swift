@@ -23,6 +23,9 @@ struct ReaderView: View {
     @State private var showBookmarks = false
     @State private var bookmarks = ReaderBookmarkStore.shared
     @State private var bookmarkError: String?
+    @State private var subscriptionRequired = false
+    @State private var orderingChapter: Chapter?
+    @State private var reloadAfterPurchase = false
     @State private var requestedPosition: ReaderTextPosition?
     @State private var scrollJumpRevision = 0
     @State private var isScrubbing = false
@@ -92,6 +95,13 @@ struct ReaderView: View {
         }
         .sheet(isPresented: $showSettings) { settings }
         .sheet(isPresented: $showBookmarks) { bookmarkList }
+        .sheet(item: $orderingChapter, onDismiss: {
+            if reloadAfterPurchase { reloadAfterPurchase = false; loadRevision += 1 }
+        }) { chapter in
+            ChapterPurchaseSheet(book: book, chapter: chapter) { authorized in
+                if authorized.id == selected.id { reloadAfterPurchase = true }
+            }
+        }
         .alert("书签暂未保存", isPresented: Binding(get: { bookmarkError != nil }, set: { if !$0 { bookmarkError = nil } })) {
             Button("好", role: .cancel) { bookmarkError = nil }
         } message: { Text(bookmarkError ?? "") }
@@ -124,9 +134,14 @@ struct ReaderView: View {
                         ProgressView("正在打开章节…").frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else if let error {
                         ContentUnavailableView {
-                            Label("暂时无法打开", systemImage: "book.closed")
-                        } description: { Text(error) } actions: {
-                            Button("重试") { loadRevision += 1 }.buttonStyle(.borderedProminent)
+                            Label(subscriptionRequired ? "本章需要订阅" : "暂时无法打开", systemImage: subscriptionRequired ? "lock" : "book.closed")
+                        } description: { Text(subscriptionRequired ? "订阅这一章后，即可在这里继续阅读。" : error) } actions: {
+                            if subscriptionRequired {
+                                Button("购买本章") { orderingChapter = selected }.buttonStyle(.borderedProminent)
+                                    .accessibilityIdentifier("reader-purchase-chapter")
+                            } else {
+                                Button("重试") { loadRevision += 1 }.buttonStyle(.borderedProminent)
+                            }
                             if chapterIsRemote {
                                 Link("在官方页面查看", destination: selected.officialURL).buttonStyle(.glass)
                             }
@@ -352,7 +367,7 @@ struct ReaderView: View {
     private var moreMenu: some View {
         Menu {
             if cloudProgressFailed { Label("云端暂未同步，本机位置已保存", systemImage: "exclamationmark.icloud") }
-            Button("本书书签", systemImage: "bookmark") { showBookmarks = true }
+            Button("书签", systemImage: "bookmark") { showBookmarks = true }
                 .accessibilityIdentifier("reader-bookmarks-menu")
             Button("上一章", systemImage: "chevron.left") { move(-1) }.disabled(chapterIndex == 0)
             Button("下一章", systemImage: "chevron.right") { move(1) }.disabled(chapterIndex + 1 >= chapters.count)
@@ -461,6 +476,7 @@ struct ReaderView: View {
 
     @MainActor private func load() async {
         loading = true; error = nil; content = nil; paragraphs = []; pagination = nil
+        subscriptionRequired = false
         cloudProgressMessage = nil; cloudProgressFailed = false
         let target = selected
         let generation = await SFAPI.shared.sessionGeneration()
@@ -496,6 +512,7 @@ struct ReaderView: View {
         } catch is CancellationError { }
         catch {
             guard !Task.isCancelled, selected.id == target.id else { return }
+            if case SFAPIError.subscriptionRequired = error { subscriptionRequired = true }
             self.error = error.localizedDescription; loading = false; shouldContinueSpeaking = false
         }
     }

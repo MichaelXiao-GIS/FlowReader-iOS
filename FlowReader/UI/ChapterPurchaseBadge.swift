@@ -18,6 +18,9 @@ struct ChapterPurchaseBadge: View {
                 case .notPurchased:
                     Image(systemName: "lock")
                         .accessibilityLabel("当前账号未购买")
+                case .requiresPurchase:
+                    Image(systemName: "lock")
+                        .accessibilityLabel("当前账号需订阅本章")
                 case .unknown:
                     Text("VIP")
                         .accessibilityLabel("付费章节，购买状态暂未确认")
