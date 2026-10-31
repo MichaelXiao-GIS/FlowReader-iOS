@@ -158,6 +158,8 @@ struct AccountServiceLoginView: View {
 
 private struct AboutView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(AppLifecycleDiagnostics.self) private var lifecycle
+    @State private var copiedDiagnostics = false
     var body: some View {
         NavigationStack {
             List {
@@ -180,6 +182,29 @@ private struct AboutView: View {
                         .font(.subheadline).foregroundStyle(.secondary)
                     Text("独立第三方客户端，与菠萝包及 SFACG 无隶属关系。作品版权归各自权利人所有。")
                         .font(.subheadline).foregroundStyle(.secondary)
+                }
+                Section {
+                    DisclosureGroup("运行诊断") {
+                        Text(lifecycle.explanation).font(.subheadline)
+                        LabeledContent("启动标识", value: String(lifecycle.snapshot.launchID.uuidString.prefix(8)))
+                        LabeledContent("当前启动", value: lifecycle.snapshot.startedAt.formatted(date: .abbreviated, time: .standard))
+                        LabeledContent("累计启动", value: String(lifecycle.snapshot.launchCount))
+                        LabeledContent("同进程返回", value: String(lifecycle.snapshot.sameProcessReturnCount))
+                        if let date = lifecycle.snapshot.lastForegroundAt {
+                            LabeledContent("最近前台", value: date.formatted(date: .abbreviated, time: .standard))
+                        }
+                        if let date = lifecycle.snapshot.lastBackgroundAt {
+                            LabeledContent("最近后台", value: date.formatted(date: .abbreviated, time: .standard))
+                        }
+                        LabeledContent("Root 挂载次数", value: String(lifecycle.snapshot.rootMountCount))
+                        LabeledContent("安装包退后台即退出", value: lifecycle.snapshot.exitsOnSuspend ? "已设置" : "未设置")
+                        Text("仅保存在本机，不含账号、阅读内容或登录凭据。页面挂载次数不等于进程重启次数。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Button(copiedDiagnostics ? "已复制诊断" : "复制诊断") {
+                            UIPasteboard.general.string = lifecycle.report
+                            copiedDiagnostics = true
+                        }
+                    }
                 }
             }
             .navigationTitle("关于")

@@ -2,7 +2,8 @@ import SwiftUI
 import UIKit
 import CoreText
 
-/// A native page-curl surface. Pagination and drawing share the same Core Text dimensions.
+/// A flexible Metal paper surface with a native reduced-motion fallback.
+/// Pagination, static views and moving textures share the exact same Core Text frames.
 struct CurlPageReader: UIViewControllerRepresentable {
     let pagination: ReaderPagination
     @Binding var currentPosition: ReaderTextPosition
@@ -71,6 +72,7 @@ struct CurlPageReader: UIViewControllerRepresentable {
         private var owner: CurlPageReader
         private weak var host: ContainerController?
         private var pager: UIPageViewController?
+        private var flexible: FlexiblePageController?
         private var rendered: CurlPageReader?
         private var displayedIndex = 0
         private var transitioning = false
@@ -113,9 +115,9 @@ struct CurlPageReader: UIViewControllerRepresentable {
             if changed || (transitioning && gestureStartPosition != owner.currentPosition) {
                 install(at: target)
             } else if !transitioning && target != displayedIndex {
-                guard let pager else { return }
                 displayedIndex = target
-                pager.setViewControllers(visibleControllers(startingAt: target), direction: .forward, animated: false)
+                if let flexible { flexible.setIndex(target) }
+                else { pager?.setViewControllers(visibleControllers(startingAt: target), direction: .forward, animated: false) }
             }
         }
 
@@ -129,6 +131,15 @@ struct CurlPageReader: UIViewControllerRepresentable {
         }
 
         private func removePager() {
+            if let flexible {
+                self.flexible = nil
+                flexible.stop()
+                flexible.willMove(toParent: nil)
+                flexible.view.removeFromSuperview()
+                flexible.removeFromParent()
+            }
+            transitioning = false
+            gestureStartPosition = nil
             guard let pager else { return }
             pager.dataSource = nil
             pager.delegate = nil
@@ -145,6 +156,37 @@ struct CurlPageReader: UIViewControllerRepresentable {
             removePager()
             rendered = owner
             displayedIndex = index
+            if !owner.reduceMotion, let surface = FlexiblePageController(pageCount: owner.pagination.pages.count,
+                                                                         doublePage: owner.doublePage, index: index,
+                                                                         paper: owner.background, makeLeaf: { [weak self] page in
+                guard let self else { preconditionFailure("Reader coordinator must outlive its page controller") }
+                return self.leaf(page)
+            }) {
+                flexible = surface
+                boundaryPan?.isEnabled = false
+                surface.onBegin = { [weak self, weak surface] in
+                    guard let self, self.flexible === surface else { return }
+                    self.transitioning = true
+                    self.gestureStartPosition = self.owner.currentPosition
+                }
+                surface.onFinish = { [weak self, weak surface] index in
+                    guard let self, self.flexible === surface else { return }
+                    self.transitioning = false
+                    self.gestureStartPosition = nil
+                    if let index { self.publish(index: index) }
+                }
+                surface.onBoundary = { [weak self, weak surface] direction in
+                    guard let self, self.flexible === surface else { return }
+                    self.owner.onChapterBoundary(direction)
+                }
+                host.addChild(surface)
+                surface.view.frame = host.view.bounds
+                surface.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                host.view.addSubview(surface.view)
+                surface.didMove(toParent: host)
+                return
+            }
+            boundaryPan?.isEnabled = true
             let options: [UIPageViewController.OptionsKey: Any] = owner.reduceMotion ? [:] : [
                 .spineLocation: NSNumber(value: (owner.doublePage ? UIPageViewController.SpineLocation.mid : .min).rawValue)
             ]
@@ -246,6 +288,11 @@ struct CurlPageReader: UIViewControllerRepresentable {
             guard let model = rendered, let pager,
                   let index = pager.viewControllers?.compactMap({ self.index(of: $0) }).min(),
                   model.pagination.pages.indices.contains(index) else { return }
+            publish(index: index)
+        }
+
+        private func publish(index: Int) {
+            guard let model = rendered, model.pagination.pages.indices.contains(index) else { return }
             displayedIndex = normalized(index, double: model.doublePage)
             owner.currentPosition = model.pagination.pages[displayedIndex].startPosition
             UIAccessibility.post(notification: .pageScrolled,
@@ -253,7 +300,9 @@ struct CurlPageReader: UIViewControllerRepresentable {
         }
 
         private func advance(_ delta: Int) {
-            guard !transitioning, let model = rendered, let pager, !model.pagination.pages.isEmpty else { return }
+            guard !transitioning else { return }
+            if let flexible { flexible.advance(delta); return }
+            guard let model = rendered, let pager, !model.pagination.pages.isEmpty else { return }
             let target = displayedIndex + delta * (model.doublePage ? 2 : 1)
             guard target >= 0, target < model.pagination.pages.count else { owner.onChapterBoundary(delta); return }
             transitioning = true
@@ -304,7 +353,7 @@ struct CurlPageReader: UIViewControllerRepresentable {
     }
 }
 
-private final class ReaderLeafController: UIViewController {
+final class ReaderLeafController: UIViewController {
     let pageIndex: Int
     private let page: ReaderPage?
     private let pageCount: Int
@@ -379,6 +428,33 @@ private final class ReaderLeafController: UIViewController {
         view.addSubview(number)
     }
 
+    func snapshot(scale: CGFloat) -> CGImage? {
+        loadViewIfNeeded()
+        guard view.bounds.width > 0, view.bounds.height > 0 else { return nil }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = scale
+        format.preferredRange = .standard
+        format.opaque = true
+        let geometry = pageLayout()
+        return UIGraphicsImageRenderer(size: view.bounds.size, format: format).image { output in
+            paper.setFill(); output.fill(view.bounds)
+            guard page != nil else { return }
+            let headingStyle = NSMutableParagraphStyle()
+            headingStyle.lineBreakMode = .byTruncatingMiddle
+            (runningTitle as NSString).draw(in: geometry.headerFrame(column: column), withAttributes: [
+                .font: UIFont.systemFont(ofSize: 11), .foregroundColor: ink.withAlphaComponent(0.48), .paragraphStyle: headingStyle
+            ])
+            let numberStyle = NSMutableParagraphStyle(); numberStyle.alignment = .center
+            ("\(pageIndex + 1) / \(pageCount)" as NSString).draw(in: geometry.footerFrame(column: column), withAttributes: [
+                .font: UIFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular), .foregroundColor: ink.withAlphaComponent(0.45), .paragraphStyle: numberStyle
+            ])
+            output.cgContext.saveGState()
+            output.cgContext.translateBy(x: geometry.textFrame.minX, y: geometry.textFrame.minY)
+            ReaderTextCanvas.drawText(textView.attributedText, size: textSize, context: output.cgContext)
+            output.cgContext.restoreGState()
+        }.cgImage
+    }
+
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         let geometry = pageLayout()
@@ -430,12 +506,16 @@ private final class ReaderTextCanvas: UIView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext(), attributedText.length > 0 else { return }
+        Self.drawText(attributedText, size: textSize, context: context)
+    }
+
+    static func drawText(_ attributedText: NSAttributedString, size: CGSize, context: CGContext) {
         context.saveGState()
         context.textMatrix = .identity
-        context.translateBy(x: 0, y: textSize.height)
+        context.translateBy(x: 0, y: size.height)
         context.scaleBy(x: 1, y: -1)
         let setter = CTFramesetterCreateWithAttributedString(attributedText)
-        let path = CGPath(rect: CGRect(origin: .zero, size: textSize), transform: nil)
+        let path = CGPath(rect: CGRect(origin: .zero, size: size), transform: nil)
         let frame = CTFramesetterCreateFrame(setter, CFRange(location: 0, length: attributedText.length), path, nil)
         CTFrameDraw(frame, context)
         context.restoreGState()

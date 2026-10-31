@@ -7,6 +7,7 @@ struct LocalLibraryView: View {
     @Environment(CloudLibraryStore.self) private var cloud
     @Environment(ReadingSession.self) private var readingSession
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var scope: Scope = .cloud
     @State private var choseInitialScope = false
     @State private var cloudCategory = ""
@@ -38,26 +39,30 @@ struct LocalLibraryView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 28) {
-                    Picker("书库来源", selection: $scope) {
-                        ForEach(Scope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            GeometryReader { geometry in
+                let shelfLayout = LibraryShelfLayout(availableWidth: geometry.size.width, dynamicTypeSize: dynamicTypeSize)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 28) {
+                        Picker("书库来源", selection: $scope) {
+                            ForEach(Scope.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        }
+                        .pickerStyle(.segmented)
+                        .accessibilityIdentifier("library-scope")
+                        .onChange(of: scope) { _, _ in choseInitialScope = true }
+                        if filter.isEmpty {
+                            if scope == .cloud { cloudContinueReading }
+                            if let recent { continueReading(recent) }
+                        }
+                        if scope == .cloud { cloudContent(layout: shelfLayout) } else { localContent(layout: shelfLayout) }
                     }
-                    .pickerStyle(.segmented)
-                    .accessibilityIdentifier("library-scope")
-                    .onChange(of: scope) { _, _ in choseInitialScope = true }
-                    if filter.isEmpty {
-                        if scope == .cloud { cloudContinueReading }
-                        if let recent { continueReading(recent) }
-                    }
-                    if scope == .cloud { cloudContent } else { localContent }
+                    .padding(.horizontal, shelfLayout.horizontalPadding)
+                    .padding(.vertical, 24)
+                    .frame(maxWidth: LibraryShelfLayout.maximumWidth, alignment: .leading)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(24)
-                .frame(maxWidth: 1040, alignment: .leading)
-                .frame(maxWidth: .infinity)
+                .background(FlowTheme.paper)
+                .accessibilityIdentifier("library-content")
             }
-            .background(FlowTheme.paper)
-            .accessibilityIdentifier("library-content")
             .navigationTitle("书库")
             .navigationDestination(for: Book.self) { book in
                 if reduceMotion { BookDetailView(book: book) }
@@ -101,7 +106,7 @@ struct LocalLibraryView: View {
         }
     }
 
-    @ViewBuilder private var cloudContent: some View {
+    @ViewBuilder private func cloudContent(layout: LibraryShelfLayout) -> some View {
         if !cloud.hasCheckedAccount {
             ProgressView("正在连接云端书架").frame(maxWidth: .infinity).padding(40)
         } else if !cloud.isConnected && !cloud.shelf.hasSnapshot {
@@ -157,9 +162,9 @@ struct LocalLibraryView: View {
             } else if !cloud.shelf.hasSnapshot && !cloud.shelf.loading && cloud.shelf.error == nil {
                 cloudMessage(title: "书架尚未同步", message: "轻点重试，读取云端收藏。", identifier: "shelf-not-loaded")
             }
-            LazyVGrid(columns: coverColumns, alignment: .leading, spacing: 30) {
+            LazyVGrid(columns: layout.columns, alignment: .leading, spacing: layout.rowSpacing) {
                 ForEach(filteredCloud) { book in
-                    NavigationLink(value: book) { coverCard(book, subtitle: book.author) }
+                    NavigationLink(value: book) { coverCard(book, layout: layout) }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("library-cloud-\(book.id)")
                 }
@@ -171,7 +176,7 @@ struct LocalLibraryView: View {
         }
     }
 
-    @ViewBuilder private var localContent: some View {
+    @ViewBuilder private func localContent(layout: LibraryShelfLayout) -> some View {
         if library.books.isEmpty && savedAudio.entries.isEmpty {
             ContentUnavailableView {
                 Label("为故事留一个位置", systemImage: "books.vertical")
@@ -184,10 +189,10 @@ struct LocalLibraryView: View {
                 Spacer()
                 Text("\(filteredLocal.count) 本").font(.subheadline).foregroundStyle(.secondary)
             }
-            LazyVGrid(columns: coverColumns, alignment: .leading, spacing: 30) {
+            LazyVGrid(columns: layout.columns, alignment: .leading, spacing: layout.rowSpacing) {
                 ForEach(filteredLocal) { local in
                     NavigationLink(value: local.book) {
-                        coverCard(local.book, subtitle: local.downloadedIDs.isEmpty ? "最近阅读" : "已下载 \(local.downloadedIDs.count) 章")
+                        coverCard(local.book, layout: layout, detail: local.downloadedIDs.isEmpty ? "最近阅读" : "已下载 \(local.downloadedIDs.count) 章")
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("library-local-\(local.id)")
@@ -203,8 +208,6 @@ struct LocalLibraryView: View {
             if !savedAudio.entries.isEmpty { offlineAudio }
         }
     }
-
-    private var coverColumns: [GridItem] { [GridItem(.adaptive(minimum: 140, maximum: 190), spacing: 24)] }
 
     @ViewBuilder private var cloudContinueReading: some View {
         if !cloudResumeBooks.isEmpty {
@@ -272,12 +275,22 @@ struct LocalLibraryView: View {
         }
     }
 
-    private func coverCard(_ book: Book, subtitle: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            BookCover(book: book, width: 140, height: 200).matchedTransitionSource(id: book.id, in: covers)
-            Text(book.title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary).lineLimit(2)
-            if !subtitle.isEmpty { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
-        }.frame(maxWidth: .infinity, alignment: .leading)
+    private func coverCard(_ book: Book, layout: LibraryShelfLayout, detail: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            BookCover(book: book, width: layout.cardWidth, height: layout.coverHeight)
+                .matchedTransitionSource(id: book.id, in: covers)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(book.title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2, reservesSpace: true)
+                if !book.author.isEmpty {
+                    Text(book.author).font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                }
+                if let detail { Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(2) }
+            }
+        }
+        .frame(width: layout.cardWidth, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     private func cloudMessage(title: String, message: String, identifier: String) -> some View {

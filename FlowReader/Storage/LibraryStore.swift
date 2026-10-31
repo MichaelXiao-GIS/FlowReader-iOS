@@ -9,6 +9,11 @@ struct ReadingProgress: Codable, Hashable {
     var paragraphUTF16Offset: Int? = nil
 }
 
+private struct ReadingProgressCheckpoint: Codable {
+    let bookID: Int
+    let progress: ReadingProgress
+}
+
 struct LocalBook: Identifiable, Codable, Hashable {
     var id: Int { book.id }
     var book: Book
@@ -53,6 +58,7 @@ final class LibraryStore {
     @ObservationIgnored private let indexURL: URL
     @ObservationIgnored private let jobsURL: URL
     @ObservationIgnored private let fetchContent: (Chapter) async throws -> ChapterContent
+    @ObservationIgnored private var unsavedProgress: Set<Int> = []
 
     init(directory: URL? = nil, fetchContent: @escaping (Chapter) async throws -> ChapterContent = { try await SFAPI.shared.content(chapter: $0) }) {
         self.fetchContent = fetchContent
@@ -64,6 +70,7 @@ final class LibraryStore {
             if FileManager.default.fileExists(atPath: indexURL.path) {
                 books = try JSONDecoder().decode([LocalBook].self, from: Data(contentsOf: indexURL))
             }
+            restoreProgressCheckpoints()
             if FileManager.default.fileExists(atPath: jobsURL.path) {
                 jobs = try JSONDecoder().decode([DownloadJob].self, from: Data(contentsOf: jobsURL))
                 for index in jobs.indices where jobs[index].status == .downloading || jobs[index].status == .queued {
@@ -124,10 +131,35 @@ final class LibraryStore {
     }
 
     func recordProgress(book: Book, chapters: [Chapter], chapterID: Int, paragraph: Int, paragraphUTF16Offset: Int? = nil) {
-        if books.firstIndex(where: { $0.id == book.id }) == nil { save(book: book, chapters: chapters) }
+        if let existing = books.first(where: { $0.id == book.id }) {
+            if existing.progress?.chapterID != chapterID,
+               !existing.chapters.contains(where: { $0.id == chapterID }),
+               chapters.contains(where: { $0.id == chapterID && $0.bookID == book.id }) {
+                // A newly published chapter needs one catalog update before its position can restore.
+                save(book: book, chapters: chapters)
+            }
+        } else { save(book: book, chapters: chapters) }
         guard let index = books.firstIndex(where: { $0.id == book.id }) else { return }
-        books[index].progress = ReadingProgress(chapterID: chapterID, paragraph: max(0, paragraph), updatedAt: Date(), paragraphUTF16Offset: paragraphUTF16Offset.map { max(0, $0) })
-        persist()
+        let paragraph = max(0, paragraph)
+        let offset = paragraphUTF16Offset.map { max(0, $0) }
+        let previous = books[index].progress
+        let unchanged = previous?.chapterID == chapterID && previous?.paragraph == paragraph && previous?.paragraphUTF16Offset == offset
+        guard !unchanged || unsavedProgress.contains(book.id) else { return }
+        if !unchanged {
+            // Keep update ordering even if the device clock moves backwards between pages.
+            let now = Date()
+            let updatedAt = previous.map { max(now, $0.updatedAt.addingTimeInterval(0.001)) } ?? now
+            books[index].progress = ReadingProgress(chapterID: chapterID, paragraph: paragraph, updatedAt: updatedAt, paragraphUTF16Offset: offset)
+        }
+        guard let progress = books[index].progress else { return }
+        unsavedProgress.insert(book.id)
+        do {
+            let url = progressURL(bookID: book.id)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let checkpoint = ReadingProgressCheckpoint(bookID: book.id, progress: progress)
+            try JSONEncoder().encode(checkpoint).write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+            unsavedProgress.remove(book.id)
+        } catch { errorMessage = "保存阅读位置失败：\(error.localizedDescription)" }
     }
 
     func download(book: Book, chapters: [Chapter]) {
@@ -177,6 +209,7 @@ final class LibraryStore {
             let folder = root.appendingPathComponent(String(bookID))
             if FileManager.default.fileExists(atPath: folder.path) { try FileManager.default.removeItem(at: folder) }
             books.removeAll { $0.id == bookID }
+            unsavedProgress.remove(bookID)
             persist()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -286,6 +319,32 @@ final class LibraryStore {
 
     private func contentURL(bookID: Int, chapterID: Int) -> URL {
         root.appendingPathComponent(String(bookID), isDirectory: true).appendingPathComponent("\(chapterID).json")
+    }
+
+    private func progressURL(bookID: Int) -> URL {
+        root.appendingPathComponent(String(bookID), isDirectory: true).appendingPathComponent("reading-progress.json")
+    }
+
+    private func restoreProgressCheckpoints() {
+        for index in books.indices {
+            let bookID = books[index].id
+            let url = progressURL(bookID: bookID)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            do {
+                let checkpoint = try JSONDecoder().decode(ReadingProgressCheckpoint.self, from: Data(contentsOf: url))
+                let progress = checkpoint.progress
+                guard checkpoint.bookID == bookID, progress.paragraph >= 0,
+                      progress.paragraphUTF16Offset.map({ $0 >= 0 }) ?? true,
+                      books[index].chapters.contains(where: { $0.id == progress.chapterID && $0.bookID == bookID }) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                // Older releases stored progress inside the full library index. A newer index
+                // may also survive a failed checkpoint write, so retain the newest valid value.
+                if books[index].progress.map({ progress.updatedAt >= $0.updatedAt }) ?? true {
+                    books[index].progress = progress
+                }
+            } catch { errorMessage = "部分阅读位置暂时无法读取，已保留书库中的已有进度。" }
+        }
     }
 
     private func persist() {

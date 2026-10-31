@@ -6,12 +6,14 @@ struct ReaderView: View {
     let chapters: [Chapter]
     @Environment(LibraryStore.self) private var library
     @Environment(CloudLibraryStore.self) private var cloud
+    @Environment(ReadingSession.self) private var readingSession
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selected: Chapter
     @State private var content: ChapterContent?
+    @State private var paragraphs: [String] = []
     @State private var loading = false
     @State private var loadRevision = 0
     @State private var syncRetryTask: Task<Void, Never>?
@@ -69,7 +71,6 @@ struct ReaderView: View {
     }
     private var chapterIsRemote: Bool { selected.id > 0 && book.id > 0 }
     private var chapterIndex: Int { chapters.firstIndex(where: { $0.id == selected.id }) ?? 0 }
-    private var paragraphs: [String] { content?.text.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } ?? [] }
 
     var body: some View {
         readingPage
@@ -109,7 +110,7 @@ struct ReaderView: View {
         }
         .foregroundStyle(foreground)
         .accessibilityAction(named: showChrome ? "隐藏阅读工具" : "显示阅读工具", toggleChrome)
-        .accessibilityAction(.escape) { dismiss() }
+        .accessibilityAction(.escape) { closeReader() }
     }
 
     private func readerViewport(safeArea: EdgeInsets) -> some View {
@@ -243,7 +244,7 @@ struct ReaderView: View {
     }
 
     private func readerChrome(layout: ReaderViewportLayout) -> some View {
-        ReaderChrome(layout: layout, bookTitle: book.title, chapterTitle: selected.title, paper: background,
+        ReaderChrome(layout: layout, paper: background,
                      bookmarked: currentBookmark != nil, contentAvailable: content != nil && !loading,
                      speaking: audio.isSpeech && audio.isPlaying && audio.title == selected.title,
                      canGoBack: chapterIndex > 0, canGoForward: chapterIndex + 1 < chapters.count,
@@ -251,7 +252,7 @@ struct ReaderView: View {
                      progressAccessibilityLabel: turnMode == "curl" ? "本章分页进度" : "本章段落进度",
                      canSeek: progressCount > 1, progress: progressBinding, onScrubbing: scrub,
                      onBookmark: toggleBookmark, onBookmarks: { showBookmarks = true },
-                     onClose: { saveProgress(); dismiss() }, onContents: { showContents = true },
+                     onClose: closeReader, onContents: { showContents = true },
                      onSettings: { showSettings = true }, onSpeak: toggleSpeech,
                      onPrevious: { move(-1) }, onNext: { move(1) }) { moreMenu }
     }
@@ -459,7 +460,7 @@ struct ReaderView: View {
     }
 
     @MainActor private func load() async {
-        loading = true; error = nil; content = nil; pagination = nil
+        loading = true; error = nil; content = nil; paragraphs = []; pagination = nil
         cloudProgressMessage = nil; cloudProgressFailed = false
         let target = selected
         let generation = await SFAPI.shared.sessionGeneration()
@@ -473,6 +474,9 @@ struct ReaderView: View {
             try Task.checkCancellation()
             guard selected.id == target.id else { return }
             content = loaded
+            // Split a chapter once, not on every scroll/progress or chrome update.
+            paragraphs = loaded.text.components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
             loading = false
             let destination = requestedPosition
             let restoredParagraph = destination?.paragraph ?? (openAtEnd ? max(0, paragraphs.count - 1) : (saved?.chapterID == target.id ? (saved?.paragraph ?? 0) : 0))
@@ -537,6 +541,12 @@ struct ReaderView: View {
     private func saveProgress() {
         guard content?.chapter.id == selected.id else { return }
         library.recordProgress(book: book, chapters: chapters, chapterID: selected.id, paragraph: readingPosition.paragraph, paragraphUTF16Offset: readingPosition.utf16Offset)
+        readingSession.checkpoint(bookID: book.id, chapterID: selected.id)
+    }
+    private func closeReader() {
+        saveProgress()
+        readingSession.close()
+        dismiss()
     }
     private func speakCurrent() {
         guard let content else { return }

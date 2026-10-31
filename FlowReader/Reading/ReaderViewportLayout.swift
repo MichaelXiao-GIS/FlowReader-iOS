@@ -6,7 +6,6 @@ struct ReaderViewportLayout {
     let contentFrame: CGRect
     let bookmarkFrame: CGRect
     let closeFrame: CGRect
-    let headingFrame: CGRect
     let toolsFrame: CGRect
     let progressFrame: CGRect
 
@@ -27,16 +26,13 @@ struct ReaderViewportLayout {
         bookmarkFrame = Self.place(bookmark, within: usable, avoiding: regions, horizontalCost: 3)
         let close = CGRect(x: usable.maxX - 48, y: usable.minY, width: 44, height: 44)
         closeFrame = Self.place(close, within: usable, avoiding: regions + [bookmarkFrame], horizontalCost: 3)
-        let headingWidth = min(460, max(1, usable.width - 132))
-        let heading = CGRect(x: width / 2 - headingWidth / 2, y: usable.minY, width: headingWidth, height: 50)
-        headingFrame = Self.place(heading, within: usable, avoiding: regions + [bookmarkFrame, closeFrame], horizontalCost: 3)
         let toolHeight: CGFloat = 228
         let tools = CGRect(x: usable.maxX - 52, y: min(max(closeFrame.maxY + 18, height * 0.16), usable.maxY - toolHeight),
                            width: 52, height: toolHeight)
-        toolsFrame = Self.place(tools, within: usable, avoiding: regions + [bookmarkFrame, closeFrame, headingFrame], horizontalCost: 4)
+        toolsFrame = Self.place(tools, within: usable, avoiding: regions + [bookmarkFrame, closeFrame], horizontalCost: 4)
         let progressWidth = min(620, max(1, usable.width - (height < 500 ? 136 : 8)))
         let progress = CGRect(x: width / 2 - progressWidth / 2, y: usable.maxY - 68, width: progressWidth, height: 68)
-        progressFrame = Self.place(progress, within: usable, avoiding: regions + [bookmarkFrame, closeFrame, headingFrame, toolsFrame], horizontalCost: 2)
+        progressFrame = Self.place(progress, within: usable, avoiding: regions + [bookmarkFrame, closeFrame, toolsFrame], horizontalCost: 2)
     }
 
     private static func place(_ preferred: CGRect, within bounds: CGRect, avoiding regions: [CGRect], horizontalCost: CGFloat) -> CGRect {

@@ -5,12 +5,12 @@ import UIKit
 
 @MainActor
 final class CurlPageControllerTests: XCTestCase {
-    func testDoublePageUsesNativeCurlWithTwoDistinctPages() throws {
-        try withReader(doublePage: true, reduceMotion: false) { pager, pagination in
-            XCTAssertEqual(pager.transitionStyle, .pageCurl)
-            XCTAssertEqual(pager.spineLocation, .mid)
-            XCTAssertTrue(pager.isDoubleSided)
-            let visible = try XCTUnwrap(pager.viewControllers)
+    func testDoublePageUsesFlexibleMetalWithTwoDistinctAccessiblePages() throws {
+        try withReader(doublePage: true, reduceMotion: false) { controller, pagination in
+            let surface = try XCTUnwrap(controller as? FlexiblePageController, "The app must bundle its compiled Metal shaders")
+            XCTAssertEqual(surface.displayedIndex, 0)
+            XCTAssertFalse(surface.isTransitioning)
+            let visible = surface.children
             XCTAssertEqual(visible.count, 2)
             guard visible.count == 2 else { return }
             XCTAssertFalse(visible[0] === visible[1])
@@ -21,7 +21,8 @@ final class CurlPageControllerTests: XCTestCase {
     }
 
     func testReducedMotionDoublePageScrollsTwoRealPagesAsOneSpread() throws {
-        try withReader(doublePage: true, reduceMotion: true) { pager, pagination in
+        try withReader(doublePage: true, reduceMotion: true) { controller, pagination in
+            let pager = try XCTUnwrap(controller as? UIPageViewController)
             XCTAssertEqual(pager.transitionStyle, .scroll)
             let visible = try XCTUnwrap(pager.viewControllers)
             XCTAssertEqual(visible.count, 1)
@@ -44,7 +45,8 @@ final class CurlPageControllerTests: XCTestCase {
     }
 
     func testReducedMotionSinglePageUsesOneScrollLeaf() throws {
-        try withReader(doublePage: false, reduceMotion: true) { pager, pagination in
+        try withReader(doublePage: false, reduceMotion: true) { controller, pagination in
+            let pager = try XCTUnwrap(controller as? UIPageViewController)
             XCTAssertEqual(pager.transitionStyle, .scroll)
             let visible = try XCTUnwrap(pager.viewControllers)
             XCTAssertEqual(visible.count, 1)
@@ -56,7 +58,7 @@ final class CurlPageControllerTests: XCTestCase {
     }
 
     private func withReader(doublePage: Bool, reduceMotion: Bool,
-                            verify: (UIPageViewController, ReaderPagination) throws -> Void) throws {
+                            verify: (UIViewController, ReaderPagination) throws -> Void) throws {
         let size = CGSize(width: doublePage ? 1200 : 600, height: 800)
         let paragraphs = (0..<60).map { index in
             "第\(index)段原创试读。海边的小书店刚刚开门，送信人把一封蓝色的信放在窗边。" +
@@ -84,7 +86,7 @@ final class CurlPageControllerTests: XCTestCase {
         coordinator.update(reader)
         host.view.layoutIfNeeded()
         XCTAssertEqual(host.children.count, 1)
-        let pager = try XCTUnwrap(host.children.first as? UIPageViewController)
+        let pager = try XCTUnwrap(host.children.first)
         try verify(pager, pagination)
     }
 

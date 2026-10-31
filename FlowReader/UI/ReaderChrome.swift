@@ -3,8 +3,6 @@ import SwiftUI
 /// Floating controls never participate in the text column's layout.
 struct ReaderChrome<More: View>: View {
     let layout: ReaderViewportLayout
-    let bookTitle: String
-    let chapterTitle: String
     let paper: Color
     let bookmarked: Bool
     let contentAvailable: Bool
@@ -45,17 +43,6 @@ struct ReaderChrome<More: View>: View {
                     .buttonStyle(.plain).glassEffect(.regular.interactive(), in: .circle)
                     .accessibilityLabel("关闭阅读").accessibilityIdentifier("reader-close")
                     .position(layout.closeFrame.center)
-
-                VStack(spacing: 3) {
-                    Text(bookTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Text(chapterTitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                .padding(.horizontal, 12)
-                .frame(width: layout.headingFrame.width, height: layout.headingFrame.height)
-                .shadow(color: paper.opacity(0.8), radius: 5)
-                .accessibilityElement(children: .combine)
-                .accessibilityIdentifier("reader-chrome-title")
-                .position(layout.headingFrame.center)
 
                 VStack(spacing: 0) {
                     tool("章节目录", symbol: "list.bullet", id: "reader-contents", action: onContents)

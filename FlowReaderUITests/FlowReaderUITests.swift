@@ -10,7 +10,7 @@ final class FlowReaderUITests: XCTestCase {
         XCUIDevice.shared.orientation = .portrait
         app = XCUIApplication()
         app.launchArguments = ["--uitesting", "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
-        if name.contains("testImmersiveCurlAndLandscapeSpread") || name.contains("testBooksControlsBookmarksAndProgress") { app.launchArguments.append("--long-reader-fixture") }
+        if name.contains("testImmersiveCurlAndLandscapeSpread") || name.contains("testBooksControlsBookmarksAndProgress") || name.contains("testHomeAndColdLaunchRestoreReading") { app.launchArguments.append("--long-reader-fixture") }
         app.launch()
     }
 
@@ -113,10 +113,22 @@ final class FlowReaderUITests: XCTestCase {
                                  "单页正文不应为角落摄像头保留整条宽侧栏")
         }
         let before = pageNumber.label
-        surface.swipeLeft()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "reader-flexible-curl").firstMatch.exists, "普通翻页应使用二维跟手纸面")
+        let grab = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.6))
+        let smallDrag = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.75, dy: 0.59))
+        grab.press(forDuration: 0.05, thenDragTo: smallDrag, withVelocity: .slow, thenHoldForDuration: 0.25)
+        XCTAssertEqual(pageNumber.label, before, "短拖动松手应取消翻页并保持位置")
+        let corner = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.8))
+        let diagonal = surface.coordinate(withNormalizedOffset: CGVector(dx: 0.18, dy: 0.35))
+        corner.press(forDuration: 0.05, thenDragTo: diagonal, withVelocity: .slow, thenHoldForDuration: 0.05)
         XCTAssertTrue(pageNumber.waitForExistence(timeout: 5))
-        XCTAssertNotEqual(pageNumber.label, before, "左右轻扫应翻到下一页")
-        capture("13-原生仿真翻页")
+        XCTAssertNotEqual(pageNumber.label, before, "斜向拖动应翻到下一页")
+        let after = pageNumber.label
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(pageNumber.waitForExistence(timeout: 10))
+        XCTAssertEqual(pageNumber.label, after, "卷页阅读返回前台应保持当前页")
+        capture("13-跟手仿真翻页")
         let anchor = String(app.staticTexts["reader-page-text"].firstMatch.label.prefix(12))
 
         XCUIDevice.shared.orientation = .landscapeLeft
@@ -174,6 +186,7 @@ final class FlowReaderUITests: XCTestCase {
         XCTAssertGreaterThan(settings.frame.midX, bookmark.frame.midX + 80)
         XCTAssertEqual(settings.frame.midX, contents.frame.midX, accuracy: 8, "阅读设置应沿右侧竖排")
         XCTAssertGreaterThan(settings.frame.midY, contents.frame.midY)
+        XCTAssertFalse(app.descendants(matching: .any)["reader-chrome-title"].exists, "工具栏不应再次显示正文已有的书名与章节")
         capture("20-Books式阅读工具")
         bookmark.tap()
         XCTAssertEqual(bookmark.label, "移除此处书签")
@@ -197,6 +210,48 @@ final class FlowReaderUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["reader-paragraph-0"].waitForExistence(timeout: 10))
         toggleReaderTools()
         XCTAssertEqual(bookmark.label, "移除此处书签", "关闭阅读后书签仍然保留")
+    }
+
+    func testHomeAndColdLaunchRestoreReading() throws {
+        let book = app.buttons["book--100"]
+        XCTAssertTrue(book.waitForExistence(timeout: 15))
+        book.tap()
+        let start = app.buttons["start-reading"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        start.tap()
+        XCTAssertTrue(app.staticTexts["reader-paragraph-0"].waitForExistence(timeout: 10))
+        toggleReaderTools()
+        let progress = app.sliders["reader-progress"]
+        XCTAssertTrue(progress.waitForExistence(timeout: 5))
+        progress.adjust(toNormalizedSliderPosition: 0.65)
+        let savedValue = progress.value as? String
+        let savedDescription = app.staticTexts["reader-progress-label"].label
+
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertTrue(progress.waitForExistence(timeout: 10), "立即返回应保持已打开的阅读工具，不能重新建立阅读页面")
+        XCTAssertEqual(progress.value as? String, savedValue)
+        XCTAssertEqual(app.staticTexts["reader-progress-label"].label, savedDescription)
+        capture("30-返回前台保留阅读")
+
+        app.terminate()
+        app.launchArguments.append("--uitesting-preserve-state")
+        app.launch()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "reader-content").firstMatch.waitForExistence(timeout: 15), "进程重新启动后应自动恢复阅读页面")
+        XCTAssertFalse(app.buttons["reader-close"].exists, "冷启动恢复仍默认沉浸")
+        toggleReaderTools()
+        XCTAssertTrue(progress.waitForExistence(timeout: 5))
+        XCTAssertEqual(progress.value as? String, savedValue)
+        XCTAssertEqual(app.staticTexts["reader-progress-label"].label, savedDescription)
+        capture("31-冷启动恢复段落位置")
+
+        app.buttons["reader-close"].tap()
+        selectTab("书库")
+        XCTAssertTrue(app.segmentedControls["library-scope"].waitForExistence(timeout: 5))
+        app.terminate()
+        app.launch()
+        XCTAssertTrue(app.segmentedControls["library-scope"].waitForExistence(timeout: 10), "退出阅读后冷启动应恢复书库页签")
+        XCTAssertFalse(app.descendants(matching: .any).matching(identifier: "reader-content").firstMatch.exists, "明确关闭的阅读页面不能再次弹出")
     }
 
     private func toggleReaderTools() {

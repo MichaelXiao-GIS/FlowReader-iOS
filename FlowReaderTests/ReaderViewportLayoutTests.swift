@@ -13,7 +13,7 @@ final class ReaderViewportLayoutTests: XCTestCase {
         XCTAssertEqual(layout.contentFrame.maxX, 600)
         XCTAssertEqual(layout.contentFrame.width, size.width - 40)
         XCTAssertFalse(layout.contentFrame.intersects(camera))
-        for frame in [layout.bookmarkFrame, layout.closeFrame, layout.headingFrame, layout.toolsFrame, layout.progressFrame] {
+        for frame in [layout.bookmarkFrame, layout.closeFrame, layout.toolsFrame, layout.progressFrame] {
             XCTAssertFalse(frame.intersects(camera))
         }
     }
@@ -26,10 +26,10 @@ final class ReaderViewportLayoutTests: XCTestCase {
                                               occlusions: [camera])
             XCTAssertEqual(layout.contentFrame.width, size.width - 40)
             XCTAssertFalse(layout.contentFrame.intersects(camera))
-            for frame in [layout.bookmarkFrame, layout.closeFrame, layout.headingFrame, layout.toolsFrame, layout.progressFrame] {
+            for frame in [layout.bookmarkFrame, layout.closeFrame, layout.toolsFrame, layout.progressFrame] {
                 XCTAssertFalse(frame.intersects(camera))
             }
-            let controls = [layout.bookmarkFrame, layout.closeFrame, layout.headingFrame, layout.toolsFrame, layout.progressFrame]
+            let controls = [layout.bookmarkFrame, layout.closeFrame, layout.toolsFrame, layout.progressFrame]
             for (index, first) in controls.enumerated() {
                 for second in controls.dropFirst(index + 1) { XCTAssertFalse(first.intersects(second)) }
             }

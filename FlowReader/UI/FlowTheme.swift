@@ -11,11 +11,27 @@ struct BookCover: View {
     let book: Book
     var width: CGFloat = 100
     var height: CGFloat = 140
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var loaded: LoadedCover?
+
+    private struct LoadedCover {
+        let request: CoverThumbnailRequest
+        let thumbnail: CoverThumbnail
+    }
+    private struct LoadID: Equatable {
+        let request: CoverThumbnailRequest?
+        let isForeground: Bool
+    }
+    private var request: CoverThumbnailRequest? {
+        CoverThumbnailRequest(url: book.coverURL, width: width, height: height, scale: displayScale)
+    }
 
     var body: some View {
-        AsyncImage(url: book.coverURL) { phase in
-            if let image = phase.image {
-                image.resizable().scaledToFill()
+        Group {
+            if let loaded, loaded.request == request {
+                Image(decorative: loaded.thumbnail.image, scale: displayScale, orientation: .up)
+                    .resizable().scaledToFill()
             } else {
                 ZStack(alignment: .bottomLeading) {
                     LinearGradient(colors: [Color(red: 0.25, green: 0.34, blue: 0.33), Color(red: 0.11, green: 0.20, blue: 0.21)], startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -41,6 +57,17 @@ struct BookCover: View {
         }
         .shadow(color: .black.opacity(0.10), radius: 10, x: 0, y: 5)
         .accessibilityHidden(true)
+        .task(id: LoadID(request: request, isForeground: scenePhase != .background)) {
+            loaded = nil
+            guard scenePhase != .background, let request else { return }
+            do {
+                let thumbnail = try await CoverThumbnailLoader.shared.thumbnail(for: request)
+                try Task.checkCancellation()
+                // The request accompanies the image, so reused cells never draw another book.
+                loaded = LoadedCover(request: request, thumbnail: thumbnail)
+            } catch { /* Preserve the existing illustrated placeholder for unavailable covers. */ }
+        }
+        .onDisappear { loaded = nil }
     }
 }
 
