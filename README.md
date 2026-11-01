@@ -8,7 +8,7 @@
 
 ## 安装
 
-从 [Releases](https://github.com/MichaelXiao-GIS/FlowReader-iOS/releases) 下载 `FlowReader-1.5.1-unsigned.ipa`。这是 **arm64 真机未签名 IPA**，需自行用个人 Apple 开发签名或现有侧载工具重新签名安装；它不含开发者证书、描述文件或 Apple 账号。
+从 [Releases](https://github.com/MichaelXiao-GIS/FlowReader-iOS/releases) 下载 `FlowReader-1.5.2-unsigned.ipa`。这是 **arm64 真机未签名 IPA**，需自行用个人 Apple 开发签名或现有侧载工具重新签名安装；它不含开发者证书、描述文件或 Apple 账号。
 
 ## 功能
 

@@ -90,7 +90,8 @@ enum MemberGiftProtocol {
             throw SFAPIError.authenticationRequired("请重新连接菠萝包账号服务后查看会员礼包。")
         }
         return AccountProfile(id: id, name: nonempty(user["nickName"]) ?? "菠萝包读者",
-                              accountName: nonempty(user["userName"]) ?? String(id))
+                              accountName: nonempty(user["userName"]) ?? String(id),
+                              avatarURL: AccountProfileParser.avatarURL(in: user))
     }
 
     static func snapshot(user payload: Any, gifts: Any, generation: UUID) throws -> MemberGiftsSnapshot {

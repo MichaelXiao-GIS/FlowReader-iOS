@@ -49,7 +49,8 @@ enum AccountWalletParser {
         // The network boundary verifies the same user before and after this request.
         if let rawID = money["accountId"], nonnegativeInteger(rawID) != accountID { throw SFAPIError.invalidResponse }
         let account = AccountProfile(id: accountID, name: nonempty(user["nickName"]) ?? "菠萝包读者",
-                                     accountName: nonempty(user["userName"]) ?? String(accountID))
+                                     accountName: nonempty(user["userName"]) ?? String(accountID),
+                                     avatarURL: AccountProfileParser.avatarURL(in: user))
         let expand = user["expand"] as? [String: Any]
         return AccountWallet(account: account, generation: generation,
                              fireMoney: nonnegativeInteger(money["fireMoneyRemain"]),

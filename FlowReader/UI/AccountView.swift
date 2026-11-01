@@ -9,16 +9,32 @@ struct AccountView: View {
     @State private var showLogout = false
     @State private var showAbout = false
     @State private var showAppLogin = false
+    #if DEBUG
+    @State private var avatarFixtureStage = 0
+    #endif
+
+    private var headerProfile: AccountProfile? {
+        #if DEBUG
+        if AccountAvatarFixture.isEnabled { return AccountAvatarFixture.profile(stage: avatarFixtureStage) }
+        #endif
+        return cloud.account
+    }
+
+    private var avatarLoader: CoverThumbnailLoader {
+        #if DEBUG
+        if AccountAvatarFixture.isEnabled { return AccountAvatarFixture.loader }
+        #endif
+        return .shared
+    }
 
     var body: some View {
         List {
             Section {
                 HStack(spacing: 16) {
-                    Image(systemName: cloud.account == nil ? "person.crop.circle" : "person.crop.circle.fill")
-                        .font(.system(size: 48, weight: .ultraLight)).foregroundStyle(FlowTheme.accent)
+                    AccountAvatar(profile: headerProfile, sessionGeneration: cloud.sessionGeneration, loader: avatarLoader)
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(cloud.account?.name ?? "你的阅读空间").font(.title3.weight(.semibold))
-                        Text(cloud.account != nil ? "你的云端阅读账号" : "登录菠萝包，连接云端书架")
+                        Text(headerProfile?.name ?? "你的阅读空间").font(.title3.weight(.semibold))
+                        Text(headerProfile != nil ? "你的云端阅读账号" : "登录菠萝包，连接云端书架")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }.padding(.vertical, 10)
@@ -32,6 +48,18 @@ struct AccountView: View {
             } footer: {
                 Text("登录后同步书架、云端续读、会员福利与有声。收藏与阅读进度位于“书库”。")
             }
+            #if DEBUG
+            if AccountAvatarFixture.isEnabled {
+                Section("离线头像验收") {
+                    Button("切换为无头像账号") { avatarFixtureStage = 1 }
+                        .accessibilityIdentifier("avatar-fixture-missing")
+                    Button("切换为加载失败账号") { avatarFixtureStage = 2 }
+                        .accessibilityIdentifier("avatar-fixture-failure")
+                    Button("重新显示头像") { avatarFixtureStage = 0 }
+                        .accessibilityIdentifier("avatar-fixture-loaded")
+                }
+            }
+            #endif
             if let error = cloud.accountError {
                 Section("账号信息") {
                     Text(error).font(.subheadline).foregroundStyle(.secondary)

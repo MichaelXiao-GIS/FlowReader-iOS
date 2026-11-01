@@ -14,7 +14,58 @@ final class FlowReaderUITests: XCTestCase {
         if name.contains("testOfflineWalletAndSingleChapterConfirmation") { app.launchArguments.append("--chapter-purchase-fixture") }
         if name.contains("testRecommendationsUseThreeColumnsAndScrollVertically") { app.launchArguments.append("--discover-grid-fixture") }
         if name.contains("testLongContentsLocateReverseAndKeepNaturalChapterNavigation") { app.launchArguments.append("--long-catalog-fixture") }
+        if name.contains("testAccountAvatarLoadsAndClearsWhenAccountChanges") { app.launchArguments.append("--account-avatar-fixture") }
         app.launch()
+    }
+
+    func testAccountAvatarLoadsAndClearsWhenAccountChanges() throws {
+        // The fixture renders an original geometric image in memory. All identities and image
+        // operations are local; no login, account mutation or remote image request is performed.
+        XCTAssertTrue(app.buttons["book--100"].waitForExistence(timeout: 15))
+        selectTab("我的")
+        assertAccountAvatar(value: "头像已加载", name: "头像测试读者")
+        capture("51-账号原创头像")
+
+        let missing = app.buttons["avatar-fixture-missing"]
+        let failed = app.buttons["avatar-fixture-failure"]
+        let loaded = app.buttons["avatar-fixture-loaded"]
+        reveal(missing)
+        missing.tap()
+        assertAccountAvatar(value: "默认头像", name: "无头像测试读者")
+        capture("52-换账号立即清除头像")
+
+        // Start the failure case with a loaded avatar so retaining the previous image is detectable.
+        reveal(loaded)
+        loaded.tap()
+        assertAccountAvatar(value: "头像已加载", name: "头像测试读者")
+        reveal(failed)
+        failed.tap()
+        assertAccountAvatar(value: "默认头像", name: "头像加载失败测试读者")
+        capture("53-头像加载失败占位")
+
+        reveal(loaded)
+        loaded.tap()
+        assertAccountAvatar(value: "头像已加载", name: "头像测试读者")
+        reveal(missing)
+        missing.tap()
+        assertAccountAvatar(value: "默认头像", name: "无头像测试读者")
+    }
+
+    private func assertAccountAvatar(value: String, name: String, file: StaticString = #filePath, line: UInt = #line) {
+        let avatar = app.descendants(matching: .any).matching(identifier: "account-avatar").firstMatch
+        for _ in 0..<6 {
+            if avatar.exists && avatar.isHittable { break }
+            app.swipeDown()
+        }
+        XCTAssertTrue(app.staticTexts[name].waitForExistence(timeout: 5), "账号标题应对应当前测试身份", file: file, line: line)
+        XCTAssertTrue(avatar.exists, file: file, line: line)
+        if value == "头像已加载" {
+            let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in avatar.value as? String == value }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed, "原创测试头像应完成加载", file: file, line: line)
+        } else {
+            // Once the new identity is visible, its placeholder must already replace the old image.
+            XCTAssertEqual(avatar.value as? String, value, "不同账号不能沿用上一账号头像", file: file, line: line)
+        }
     }
 
     func testLongContentsLocateReverseAndKeepNaturalChapterNavigation() throws {

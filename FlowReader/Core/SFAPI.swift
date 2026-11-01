@@ -151,7 +151,7 @@ actor SFAPI {
         guard !account.isEmpty, account.count <= 80,
               account.unicodeScalars.allSatisfy({ CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-").contains($0) }) else { throw SFAPIError.invalidResponse }
         let id = ["accountId", "accountid", "userId", "userid"].compactMap { HTMLParser.jsField($0, in: text).flatMap(Int.init) }.first ?? 0
-        let avatar = ["avatar", "userAvatar", "portrait", "headImg", "headimg"].compactMap { HTMLParser.jsField($0, in: text).flatMap(Self.remoteURL) }.first
+        let avatar = AccountProfileParser.webAvatarURL(in: text)
         return AccountProfile(id: id, name: name, accountName: account, avatarURL: avatar)
     }
 
@@ -258,7 +258,7 @@ actor SFAPI {
     private func appProfile() async throws -> AccountProfile {
         guard hasAppSession() else { throw SFAPIError.loginRequired }
         guard let user = try await appData(path: "/user", query: ["expand": "welfareCoin"], includeSession: true) as? [String: Any], let id = Self.integer(user["accountId"]), id > 0 else { throw SFAPIError.loginRequired }
-        return AccountProfile(id: id, name: user["nickName"] as? String ?? "菠萝包读者", accountName: user["userName"] as? String ?? String(id), avatarURL: (user["avatar"] as? String).flatMap(Self.remoteURL))
+        return AccountProfile(id: id, name: user["nickName"] as? String ?? "菠萝包读者", accountName: user["userName"] as? String ?? String(id), avatarURL: AccountProfileParser.avatarURL(in: user))
     }
 
     private func deviceBody(accountID: Int, full: Bool) -> [String: Any] {
