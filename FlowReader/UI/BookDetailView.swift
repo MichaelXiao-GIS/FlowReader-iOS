@@ -26,6 +26,18 @@ struct BookDetailView: View {
     @State private var purchasedReadingChapter: Chapter?
 
     private var isSaved: Bool { library.books.contains { $0.id == book.id } }
+    private var authorID: Int? {
+        #if DEBUG
+        if AuthorProfileFixture.isEnabled { return AuthorProfileFixture.authorID(for: book) }
+        #endif
+        return book.authorID
+    }
+    private var authorClient: AuthorProfileState.Client {
+        #if DEBUG
+        if AuthorProfileFixture.isEnabled { return AuthorProfileFixture.client() }
+        #endif
+        return .live
+    }
     private var readingChapter: Chapter? {
         if let progress = library.localBook(id: book.id)?.progress,
            let chapter = chapters.first(where: { $0.id == progress.chapterID }) { return chapter }
@@ -104,7 +116,23 @@ struct BookDetailView: View {
             BookCover(book: book, width: horizontalSizeClass == .regular ? 140 : 108, height: horizontalSizeClass == .regular ? 196 : 153)
             VStack(alignment: .leading, spacing: 12) {
                 Text(book.title).font(.title2.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                Text(book.author).font(.subheadline).foregroundStyle(.secondary)
+                if let authorID, authorID > 0 {
+                    NavigationLink {
+                        AuthorProfileView(authorID: authorID, fallbackName: book.author, client: authorClient)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text(book.author)
+                            Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
+                        }
+                        .multilineTextAlignment(.leading)
+                    }
+                    .font(.subheadline)
+                    .foregroundStyle(FlowTheme.accent)
+                    .accessibilityLabel("查看作者：\(book.author)")
+                    .accessibilityIdentifier("book-author")
+                } else {
+                    Text(book.author).font(.subheadline).foregroundStyle(.secondary)
+                }
                 HStack(spacing: 8) {
                     Text(book.isFinished ? "已完结" : "连载中")
                     if let category = book.category { Text(category) }
@@ -268,6 +296,13 @@ struct BookDetailView: View {
             loading = false
             return
         }
+        #if DEBUG
+        if AuthorProfileFixture.isEnabled, book.id < 0, AuthorProfileFixture.contains(bookID: book.id) {
+            chapters = []
+            loading = false
+            return
+        }
+        #endif
         loading = true
         error = nil
         if let local = library.localBook(id: book.id) { chapters = local.chapters }

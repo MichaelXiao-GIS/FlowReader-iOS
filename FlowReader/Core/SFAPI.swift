@@ -400,12 +400,12 @@ actor SFAPI {
         return parts.url
     }
 
-    private static func parseBook(_ object: [String: Any]) -> Book? {
+    static func parseBook(_ object: [String: Any]) -> Book? {
         guard let id = integer(object["novelId"]), id > 0, let title = object["novelName"] as? String else { return nil }
         let expand = object["expand"] as? [String: Any] ?? [:]
         let tags = (expand["sysTags"] as? [[String: Any]] ?? []).compactMap { $0["tagName"] as? String }
         let latest = (expand["latestChapter"] ?? expand["latestchapter"]) as? [String: Any]
-        return Book(id: id, title: title, author: object["authorName"] as? String ?? "未知作者", coverURL: ((expand["bigNovelCover"] ?? object["novelCover"]) as? String).flatMap(remoteURL), summary: HTMLParser.plainText(expand["intro"] as? String ?? object["intro"] as? String ?? ""), category: expand["typeName"] as? String, tags: tags, isFinished: object["isFinish"] as? Bool ?? false, wordCount: integer(object["charCount"]), latestChapter: latest?["title"] as? String, updatedAt: object["lastUpdateTime"] as? String)
+        return Book(id: id, title: title, author: object["authorName"] as? String ?? "未知作者", coverURL: ((expand["bigNovelCover"] ?? object["novelCover"]) as? String).flatMap(remoteURL), summary: HTMLParser.plainText(expand["intro"] as? String ?? object["intro"] as? String ?? ""), category: expand["typeName"] as? String, tags: tags, isFinished: object["isFinish"] as? Bool ?? false, wordCount: integer(object["charCount"]), latestChapter: latest?["title"] as? String, updatedAt: object["lastUpdateTime"] as? String, authorID: AuthorProtocol.positiveIdentifier(object["authorId"]))
     }
 
     private static func objects(in payload: Any, depth: Int = 0) -> [[String: Any]] {

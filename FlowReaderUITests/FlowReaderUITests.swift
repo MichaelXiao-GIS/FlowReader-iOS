@@ -18,7 +18,66 @@ final class FlowReaderUITests: XCTestCase {
         if name.contains("testMemberGiftEligibilityAndClaimRefresh") { app.launchArguments.append("--member-gifts-fixture") }
         if name.contains("testReadingTime") { app.launchArguments.append("--reading-time-fixture") }
         if name.contains("testReadingTimeUnconfirmedReportKeepsDailyProgress") { app.launchArguments.append("--reading-time-failure-fixture") }
+        if name.contains("testAuthorProfile") { app.launchArguments.append("--author-profile-fixture") }
         app.launch()
+    }
+
+    func testAuthorProfileWorksAndNativeReturn() throws {
+        let book = app.buttons["book--100"]
+        XCTAssertTrue(book.waitForExistence(timeout: 15))
+        book.tap()
+        let author = app.buttons["book-author"]
+        XCTAssertTrue(author.waitForExistence(timeout: 10))
+        author.tap()
+        let name = app.staticTexts["author-name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 10))
+        XCTAssertEqual(name.label, "海岸来信")
+        let avatar = app.descendants(matching: .any).matching(identifier: "author-avatar").firstMatch
+        let loaded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            avatar.exists && (avatar.value as? String) == "头像已加载"
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [loaded], timeout: 8), .completed)
+        XCTAssertTrue(app.staticTexts["author-biography"].exists)
+        let count = app.descendants(matching: .any).matching(identifier: "author-work-count").firstMatch
+        XCTAssertTrue(count.label.contains("6"))
+        let first = app.buttons["author-book--701"]
+        reveal(first)
+        XCTAssertTrue(first.isEnabled)
+        capture("81-作者资料与作品")
+        first.tap()
+        XCTAssertTrue(author.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["沿海慢车"].exists)
+        author.tap()
+        XCTAssertTrue(name.waitForExistence(timeout: 8))
+        let second = app.buttons["author-book--702"]
+        reveal(second)
+        second.tap()
+        XCTAssertTrue(author.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.staticTexts["雨天的书店"].exists)
+        navigateBack(until: second, labels: ["作者", "返回", "Back"])
+        navigateBack(until: author, labels: ["作品", "返回", "Back"])
+        navigateBack(until: first, labels: ["作者", "返回", "Back"])
+        XCTAssertTrue(first.waitForExistence(timeout: 8))
+
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(app.staticTexts["author-name"].waitForExistence(timeout: 10),
+                      "旋转完成后作者资料应仍然存在")
+        let last = app.buttons["author-book--706"]
+        for _ in 0..<6 {
+            if last.exists && last.isHittable { break }
+            app.scrollViews.firstMatch.swipeUp()
+        }
+        if !last.exists || !last.isHittable {
+            capture("作者横屏滚动诊断")
+            print(app.debugDescription)
+        }
+        XCTAssertTrue(last.isHittable, "横屏应能纵向浏览到作者全部作品")
+        capture("82-横屏作者作品网格")
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(last.waitForExistence(timeout: 10))
+        navigateBack(until: author, labels: ["作品", "返回", "Back"])
+        XCTAssertTrue(author.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons["start-reading"].exists)
     }
 
     func testReadingTimeConfirmationUpdatesDailyProgress() throws {

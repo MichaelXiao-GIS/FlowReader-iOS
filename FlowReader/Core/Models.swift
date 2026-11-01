@@ -13,6 +13,8 @@ struct Book: Identifiable, Codable, Hashable, Sendable {
     var latestChapter: String? = nil
     var updatedAt: String? = nil
     var shelfName: String? = nil
+    /// The author's public profile ID, distinct from their account ID. Missing in old local indexes.
+    var authorID: Int? = nil
     var officialURL: URL { URL(string: "https://book.sfacg.com/Novel/\(id)/")! }
 }
 
