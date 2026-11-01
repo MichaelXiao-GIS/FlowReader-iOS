@@ -39,6 +39,7 @@ struct MemberGiftsView: View {
                         if !gift.detail.isEmpty { Text(gift.detail).font(.subheadline).foregroundStyle(.secondary) }
                         if let amount = gift.quantity {
                             Label("奖励数量：\(amount)", systemImage: "gift").font(.subheadline).foregroundStyle(FlowTheme.accent)
+                                .accessibilityIdentifier("member-gift-quantity-\(gift.id)")
                         }
                         if let days = gift.intervalDays, !gift.detail.contains("每\(days)天"), !gift.detail.contains("每 \(days) 天") {
                             Text("每 \(days) 天可领取一次").font(.caption).foregroundStyle(.secondary)
@@ -63,10 +64,12 @@ struct MemberGiftsView: View {
             }
         }
         .scrollContentBackground(.hidden).background(FlowTheme.paper)
+        .accessibilityIdentifier("member-gifts-content")
         .navigationTitle("会员礼包").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("刷新", systemImage: "arrow.clockwise") { Task { await state.refresh(.gifts) } }.disabled(state.busy)
+                    .accessibilityIdentifier("member-gifts-refresh")
             }
         }
         .task { await state.refresh(.gifts) }

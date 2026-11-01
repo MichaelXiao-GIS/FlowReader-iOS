@@ -104,13 +104,15 @@ enum MemberGiftProtocol {
         let parsed = try rows.map { row -> MemberGift in
             guard let type = integer(row["type"]), let packType = integer(row["packType"]),
                   let title = nonempty(row["name"]) else { throw SFAPIError.invalidResponse }
-            let remaining = integer(row["residueDay"])
+            // Android aw.y.f() returns signed residueDay; the gift adapter enables
+            // claiming for every value <= 0. interval is separate display metadata.
+            let remaining = signedInteger(row["residueDay"])
             let interval = integer(row["interval"]).flatMap { $0 > 0 ? $0 : nil }
             let availability: MemberGiftAvailability
             if packType != 0 || !(0...3).contains(type) { availability = .unknown }
             else if isActive == false { availability = .membershipRequired }
-            else if isActive == true, interval != nil, let remaining {
-                availability = remaining == 0 ? .available : .cooldown
+            else if isActive == true, let remaining {
+                availability = remaining <= 0 ? .available : .cooldown
             } else { availability = .unknown }
             let gift = MemberGift(type: type, packType: packType, title: title,
                                   detail: nonempty(row["desc"]) ?? "",
@@ -144,6 +146,12 @@ enum MemberGiftProtocol {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
               number.doubleValue >= 0 else { return nil }
         return Int(exactly: number.doubleValue)
+    }
+
+    private static func signedInteger(_ value: Any?) -> Int? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              !CFNumberIsFloatType(number) else { return nil }
+        return Int(number.stringValue)
     }
 
     private static func boolean(_ value: Any?) -> Bool? {

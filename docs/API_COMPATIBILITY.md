@@ -66,7 +66,11 @@ VIP 图片解析参考上游 `src-tauri/ocr-worker/ocr_worker.py` 的多帧、38
 
 会员礼包由 APK `WelfareApi` 的真实方法/参数注解确认：列表为 `GET /Member/Prize`，可带 `packType` 查询参数；领取为 `POST /Member/Prize?type={type}&packType={packType}`，参数位于 URL 查询中，没有 JSON 或表单正文。本版支持普通菠萝包会员 `packType=0` 的四类已确认礼包。官方[会员权益说明](https://pages.sfacg.com/h5/app/common/guide/membership-program.html)及其公开脚本说明了日礼包与每七天礼包；实际名称、数量说明、间隔和剩余天数仍以服务器列表为准。
 
-礼包列表即使未登录也可能返回，因此 `num=0` 或 `residueDay=0` 单独不能证明可领取。客户端先通过 `GET /user?expand=member,dianyamember` 确认 App 身份和真正布尔值 `member.isOpen`，再读取礼包列表。认证只读验证确认 `interval`、`residueDay`、`lastCreateDateTime` 与账号的日/周冷却一致；仅当前会员资格明确有效、已知礼包类型且冷却为零时允许用户手动提交。`/Member/Prize/Summary` 的汇总字段不用于推断会员资格；缺失字段、未知礼包或冷却异常不启用领取。提交前重新检查身份、资格和冷却，使用并发互斥及会话代际校验，服务器明确成功后才显示领取成功，不臆测回执未提供的奖励数量。此次实现验证未提交真实会员礼包领取。
+礼包列表即使未登录也可能返回，因此 `num=0` 或 `residueDay=0` 单独不能证明可领取。客户端先通过 `GET /user?expand=member,dianyamember` 确认 App 身份和真正布尔值 `member.isOpen`，再读取礼包列表。认证只读验证确认 `interval`、`residueDay`、`lastCreateDateTime` 与账号的日/周冷却一致。
+
+APK 礼包模型 `aw.y.g(JSONObject)` 以 `optLong("residueDay")` 读取有符号剩余天数，`f()` 返回该值。`SFMemberGiftPackAdapter.b` 原始指令在 `0x8656d62` 调用 `f()`，`0x8656d72` 的 `if-lez` 跳入“立即领取”并启用按钮；正数 1 显示“明日再来”，其他正数显示剩余天数并禁用按钮。`interval` 独立保存，不参与这个资格判断。因此本项目在当前会员资格明确有效、已知礼包类型的前提下，以有效整数 `residueDay <= 0` 允许手动领取，不再把负数误判为未知，也不额外要求 `interval > 0`。缺失、布尔值和小数仍保持未知；有效正数 `interval` 仅作为周期元数据，未知周期不猜测本地领取确认记录的释放时间。
+
+`/Member/Prize/Summary` 的汇总字段不用于推断会员资格；未知礼包或无法解析的冷却值不启用领取。提交前重新检查身份、资格和冷却，使用并发互斥及会话代际校验，服务器明确成功后才显示领取成功，不臆测回执未提供的奖励数量。此次实现验证未提交真实会员礼包领取。
 
 ## 云端阅读位置
 

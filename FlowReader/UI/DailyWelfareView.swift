@@ -81,6 +81,25 @@ struct DailyWelfareView: View {
 @MainActor @Observable
 final class WelfareViewState {
     enum SectionKind { case daily, gifts }
+    struct Client {
+        var generation: @MainActor () async -> UUID
+        var profile: @MainActor () async throws -> AccountProfile
+        var daily: @MainActor (UUID) async throws -> DailyWelfareSnapshot
+        var gifts: @MainActor (UUID) async throws -> MemberGiftsSnapshot
+        var acceptTask: @MainActor (Int, UUID) async throws -> DailyWelfareReceipt
+        var claimReward: @MainActor (Int, UUID) async throws -> DailyWelfareReceipt
+        var claimGift: @MainActor (MemberGift, UUID) async throws -> MemberGiftReceipt
+
+        static let live = Client(
+            generation: { await SFAPI.shared.sessionGeneration() },
+            profile: { try await SFAPI.shared.accountServiceProfile() },
+            daily: { try await SFAPI.shared.dailyWelfareTasks(expectedGeneration: $0) },
+            gifts: { try await SFAPI.shared.memberGifts(expectedGeneration: $0) },
+            acceptTask: { try await SFAPI.shared.acceptDailyWelfareTask(taskID: $0, expectedGeneration: $1) },
+            claimReward: { try await SFAPI.shared.claimDailyWelfareReward(taskID: $0, expectedGeneration: $1) },
+            claimGift: { try await SFAPI.shared.claimMemberGift($0, expectedGeneration: $1) }
+        )
+    }
     private enum Confirmation { case daily(DailyWelfareReceipt), gift(MemberGift, MemberGiftReceipt) }
     private(set) var account: AccountProfile?
     private(set) var tasks: [DailyWelfareTask] = []
@@ -99,7 +118,10 @@ final class WelfareViewState {
     private var generation: UUID?
     private var requestID = UUID()
     private var verified = false
+    @ObservationIgnored private let client: Client
     var busy: Bool { loading || actionKey != nil }
+
+    init(client: Client = .live) { self.client = client }
 
     func invalidateRead() {
         // A submitted action must retain its receipt even after the user navigates back.
@@ -112,7 +134,7 @@ final class WelfareViewState {
         requestID = request
         loading = true; verified = false; errorMessage = nil
         defer { if requestID == request { loading = false } }
-        let current = await SFAPI.shared.sessionGeneration()
+        let current = await client.generation()
         guard requestID == request, !Task.isCancelled else { return }
         if generation != current { clearAccountData(); generation = current }
         confirmations.prepare(generation: current, serviceDay: SignInProtocol.serviceDay(at: Date()))
@@ -152,8 +174,8 @@ final class WelfareViewState {
         let accept = task.canAccept
         await mutate(.daily, key: "task-\(task.id)", generation: generation) {
             let receipt = accept
-                ? try await SFAPI.shared.acceptDailyWelfareTask(taskID: task.id, expectedGeneration: generation)
-                : try await SFAPI.shared.claimDailyWelfareReward(taskID: task.id, expectedGeneration: generation)
+                ? try await client.acceptTask(task.id, generation)
+                : try await client.claimReward(task.id, generation)
             return .daily(receipt)
         }
     }
@@ -161,7 +183,7 @@ final class WelfareViewState {
     func claim(_ gift: MemberGift) async {
         guard canClaim(gift), let generation else { return }
         await mutate(.gifts, key: "gift-\(gift.id)", generation: generation) {
-            .gift(gift, try await SFAPI.shared.claimMemberGift(gift, expectedGeneration: generation))
+            .gift(gift, try await client.claimGift(gift, generation))
         }
     }
 
@@ -193,7 +215,7 @@ final class WelfareViewState {
 
     private func read(_ section: SectionKind, request: UUID, generation: UUID) async throws {
         // Never interpret an anonymously readable catalogue as this account's task state.
-        let identity = try await SFAPI.shared.accountServiceProfile()
+        let identity = try await client.profile()
         guard await isCurrent(request, generation) else { throw CancellationError() }
         if let account, !account.matchesAccountIdentity(identity) {
             clearAccountData()
@@ -202,13 +224,13 @@ final class WelfareViewState {
         account = identity
         switch section {
         case .daily:
-            let snapshot = try await SFAPI.shared.dailyWelfareTasks(expectedGeneration: generation)
+            let snapshot = try await client.daily(generation)
             guard await isCurrent(request, generation), snapshot.generation == generation else { throw CancellationError() }
             tasks = snapshot.tasks.filter { !$0.isSignIn }
             hasLoadedDaily = true
             confirmations.reconcile(tasks: tasks)
         case .gifts:
-            let snapshot = try await SFAPI.shared.memberGifts(expectedGeneration: generation)
+            let snapshot = try await client.gifts(generation)
             guard await isCurrent(request, generation), snapshot.generation == generation,
                   snapshot.account.matchesAccountIdentity(identity) else { throw CancellationError() }
             account = snapshot.account; gifts = snapshot.gifts
@@ -221,7 +243,7 @@ final class WelfareViewState {
 
     private func isCurrent(_ request: UUID, _ expected: UUID) async -> Bool {
         guard requestID == request, generation == expected, !Task.isCancelled else { return false }
-        let current = await SFAPI.shared.sessionGeneration()
+        let current = await client.generation()
         guard requestID == request, !Task.isCancelled else { return false }
         if current != expected { clearAccountData(); generation = current; return false }
         return generation == expected

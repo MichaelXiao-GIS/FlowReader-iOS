@@ -43,15 +43,67 @@ final class MemberGiftTests: XCTestCase {
         for value: Any in [1, "true", NSNull()] {
             XCTAssertEqual(try snapshot([row()], active: value).gifts[0].availability, .unknown)
         }
-        for value: Any in [-1, 0.5, true, "0", NSNull()] {
+        for value: Any in [-0.5, 0.5, true, "0", NSNull(), Double.infinity] {
             let result = try snapshot([row(remaining: value)])
             XCTAssertEqual(result.gifts[0].availability, .unknown)
             XCTAssertThrowsError(try MemberGiftProtocol.claimRequest(for: result.gifts[0], current: result))
         }
     }
 
+    func testAndroidSignedCooldownEnablesAllNonpositiveIntegerValues() throws {
+        for remaining in [Int.min, -365, -2, -1, 0] {
+            let current = try snapshot([row(remaining: remaining)])
+            let gift = try XCTUnwrap(current.gifts.first)
+            XCTAssertEqual(gift.remainingDays, remaining)
+            XCTAssertEqual(gift.availability, .available)
+            XCTAssertEqual(try MemberGiftProtocol.claimRequest(for: gift, current: current).query,
+                           ["type": "1", "packType": "0"])
+        }
+        for remaining in [1, 5, Int.max] {
+            let current = try snapshot([row(remaining: remaining)])
+            XCTAssertEqual(current.gifts[0].remainingDays, remaining)
+            XCTAssertEqual(current.gifts[0].availability, .cooldown)
+            XCTAssertThrowsError(try MemberGiftProtocol.claimRequest(for: current.gifts[0], current: current))
+        }
+    }
+
+    func testIntervalMetadataDoesNotOverrideConfirmedServerCooldown() throws {
+        // Android checks residueDay, not interval. Unknown recurrence remains unknown
+        // metadata rather than inventing a daily/weekly period for local receipt expiry.
+        for interval: Any? in [nil, NSNull(), 0, -1, "1"] {
+            var ready = row(remaining: -3)
+            ready["interval"] = interval
+            let available = try snapshot([ready])
+            XCTAssertNil(available.gifts[0].intervalDays)
+            XCTAssertEqual(available.gifts[0].availability, .available)
+            XCTAssertNoThrow(try MemberGiftProtocol.claimRequest(for: available.gifts[0], current: available))
+            ready["residueDay"] = 1
+            let cooling = try snapshot([ready])
+            XCTAssertEqual(cooling.gifts[0].availability, .cooldown)
+            XCTAssertThrowsError(try MemberGiftProtocol.claimRequest(for: cooling.gifts[0], current: cooling))
+        }
+    }
+
+    func testNonpositiveCooldownNeverSubstitutesForMembershipOrKnownGiftType() throws {
+        for active: Any? in [nil, false, "true", 1] {
+            let current = try snapshot([row(remaining: -2)], active: active)
+            XCTAssertNotEqual(current.gifts[0].availability, .available)
+            XCTAssertThrowsError(try MemberGiftProtocol.claimRequest(for: current.gifts[0], current: current))
+        }
+        for gift in [row(type: 4, remaining: -2), row(remaining: -2, packType: 1)] {
+            let current = try snapshot([gift])
+            XCTAssertEqual(current.gifts[0].availability, .unknown)
+            XCTAssertThrowsError(try MemberGiftProtocol.claimRequest(for: current.gifts[0], current: current))
+        }
+        var missingCooldown = row()
+        missingCooldown.removeValue(forKey: "residueDay")
+        let current = try snapshot([missingCooldown])
+        XCTAssertEqual(current.gifts[0].availability, .unknown)
+        XCTAssertThrowsError(try MemberGiftProtocol.claimRequest(for: current.gifts[0], current: current))
+    }
+
     func testRefreshRechecksSelectedGiftInsteadOfTrustingOldAvailableState() throws {
-        let old = try snapshot([row()])
+        let old = try snapshot([row(remaining: -1)])
         let refreshed = try snapshot([row(remaining: 1)])
         XCTAssertThrowsError(try MemberGiftProtocol.claimRequest(for: old.gifts[0], current: refreshed))
         let gone = try snapshot([])

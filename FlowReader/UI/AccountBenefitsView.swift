@@ -20,7 +20,15 @@ struct AccountBenefitsView: View {
     @State private var requestID = UUID()
     @State private var sessionGeneration: UUID?
     @State private var actionTask: Task<Void, Never>?
-    @State private var welfare = WelfareViewState()
+    @State private var welfare: WelfareViewState
+
+    init() {
+        #if DEBUG
+        _welfare = State(initialValue: MemberGiftsFixture.isEnabled ? MemberGiftsFixture.makeState() : WelfareViewState())
+        #else
+        _welfare = State(initialValue: WelfareViewState())
+        #endif
+    }
 
     private var status: SignInStatus? { signState.status }
     private var receipt: SignInReceipt? { signState.receipt }

@@ -15,7 +15,72 @@ final class FlowReaderUITests: XCTestCase {
         if name.contains("testRecommendationsUseThreeColumnsAndScrollVertically") { app.launchArguments.append("--discover-grid-fixture") }
         if name.contains("testLongContentsLocateReverseAndKeepNaturalChapterNavigation") { app.launchArguments.append("--long-catalog-fixture") }
         if name.contains("testAccountAvatarLoadsAndClearsWhenAccountChanges") { app.launchArguments.append("--account-avatar-fixture") }
+        if name.contains("testMemberGiftEligibilityAndClaimRefresh") { app.launchArguments.append("--member-gifts-fixture") }
         app.launch()
+    }
+
+    func testMemberGiftEligibilityAndClaimRefresh() throws {
+        // This explicit fixture injects all identity, read and mutation dependencies locally.
+        // It exercises the production eligibility parser without claiming a real reward.
+        XCTAssertTrue(app.buttons["book--100"].waitForExistence(timeout: 15))
+        selectTab("我的")
+        let benefits = app.buttons["account-benefits"]
+        reveal(benefits)
+        benefits.tap()
+        let entry = app.buttons["benefits-member-gifts"]
+        reveal(entry)
+        entry.tap()
+        let identity = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "离线礼包测试读者")).firstMatch
+        XCTAssertTrue(identity.waitForExistence(timeout: 10), "应确认当前礼包资格属于离线测试身份")
+
+        let daily = app.buttons["member-gift-0-1"]
+        let weekly = app.buttons["member-gift-0-0"]
+        reveal(daily)
+        let dailyReady = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            daily.exists && daily.isEnabled && daily.label == "领取礼包"
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [dailyReady], timeout: 5), .completed,
+                       "会员每日礼包的负数剩余天数应允许领取，不能误报资格待确认")
+        // SwiftUI Label exposes both its gift image and its text with the same identifier.
+        let quantity = app.staticTexts.matching(identifier: "member-gift-quantity-0-1").firstMatch
+        XCTAssertTrue(quantity.exists)
+        XCTAssertTrue(quantity.label.contains("20"), "应显示目录提供的20代券奖励数量")
+        XCTAssertFalse(app.buttons["资格待确认"].exists)
+        capture("61-每日会员礼包可领取")
+
+        reveal(weekly)
+        XCTAssertEqual(weekly.label, "5 天后可领取")
+        XCTAssertFalse(weekly.isEnabled, "每周礼包尚在冷却，不能随每日礼包一起放开")
+        for _ in 0..<6 {
+            if daily.exists && daily.isHittable { break }
+            app.swipeDown()
+        }
+        XCTAssertTrue(daily.exists && daily.isHittable)
+        daily.tap()
+        let claimed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            daily.exists && daily.label == "明日再来" && !daily.isEnabled
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [claimed], timeout: 5), .completed,
+                       "离线领取成功后应刷新为明日再来并禁止重复领取")
+        capture("62-会员礼包领取后刷新")
+
+        let refresh = app.buttons["member-gifts-refresh"]
+        XCTAssertTrue(refresh.exists && refresh.isEnabled)
+        refresh.tap()
+        let refreshed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            refresh.isEnabled && daily.exists && daily.label == "明日再来" && !daily.isEnabled
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [refreshed], timeout: 5), .completed)
+        reveal(weekly)
+        XCTAssertEqual(weekly.label, "5 天后可领取")
+        XCTAssertFalse(weekly.isEnabled)
+
+        navigateBack(until: entry, labels: ["会员与签到", "返回", "Back"])
+        reveal(entry)
+        entry.tap()
+        reveal(daily)
+        XCTAssertEqual(daily.label, "明日再来", "返回再进入仍应展示已刷新后的领取状态")
+        XCTAssertFalse(daily.isEnabled)
     }
 
     func testAccountAvatarLoadsAndClearsWhenAccountChanges() throws {
