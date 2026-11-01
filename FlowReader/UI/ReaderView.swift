@@ -7,6 +7,7 @@ struct ReaderView: View {
     @Environment(LibraryStore.self) private var library
     @Environment(CloudLibraryStore.self) private var cloud
     @Environment(ReadingSession.self) private var readingSession
+    @Environment(ReadingTimeReporter.self) private var readingTime
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
@@ -40,6 +41,9 @@ struct ReaderView: View {
     @State private var progressGeneration: UUID?
     @State private var cloudProgressMessage: String?
     @State private var cloudProgressFailed = false
+    @State private var readerIsVisible = false
+    @State private var pagedTextVisible = false
+    @State private var readerMenuOpen = false
     @ScaledMetric(relativeTo: .body) private var textScale = 1.0
     @AppStorage("reader.fontSize") private var fontSize = 21.0
     @AppStorage("reader.lineSpacing") private var lineSpacing = 10.0
@@ -107,12 +111,35 @@ struct ReaderView: View {
         .alert("书签暂未保存", isPresented: Binding(get: { bookmarkError != nil }, set: { if !$0 { bookmarkError = nil } })) {
             Button("好", role: .cancel) { bookmarkError = nil }
         } message: { Text(bookmarkError ?? "") }
-        .onDisappear { syncRetryTask?.cancel(); saveProgress() }
+        .onAppear { readerIsVisible = true }
+        .onDisappear { readerIsVisible = false; readingTime.setActivity(nil); syncRetryTask?.cancel(); saveProgress() }
+        .onChange(of: readingTimeContext, initial: true) { _, context in readingTime.setActivity(context) }
         .onChange(of: scenePhase) { _, phase in if phase != .active { saveProgress() } }
-        .onChange(of: readingPosition) { _, _ in if turnMode == "curl" { saveProgress() } }
+        .onChange(of: readingPosition) { _, _ in
+            readerMenuOpen = false
+            readingTime.noteInteraction()
+            if turnMode == "curl" { saveProgress() }
+        }
         .onChange(of: turnMode) { _, mode in
             if mode == "scroll" { visibleParagraph = readingPosition.paragraph }
         }
+    }
+
+    private var readingTimeContext: ReadingTimeContext? {
+        guard readerIsVisible, scenePhase == .active, !loading, error == nil,
+              content?.chapter.id == selected.id, !paragraphs.isEmpty,
+              !showContents, !showSettings, !showBookmarks, orderingChapter == nil,
+              bookmarkError == nil, library.errorMessage == nil, !readerMenuOpen,
+              !(audio.isSpeech && audio.isPlaying),
+              turnMode != "curl" || pagedTextVisible,
+              let generation = progressGeneration else { return nil }
+        #if DEBUG
+        if ReadingTimeFixture.isEnabled, book.id == -100 {
+            return ReadingTimeFixture.shared.context(chapterID: selected.id)
+        }
+        #endif
+        guard chapterIsRemote else { return nil }
+        return ReadingTimeContext(generation: generation, bookID: book.id, chapterID: selected.id)
     }
 
     private var readingPage: some View {
@@ -197,8 +224,15 @@ struct ReaderView: View {
         .scrollIndicators(.hidden)
         .contentMargins(0, for: .scrollContent)
         .scrollPosition(id: $visibleParagraph, anchor: .top)
+        .onScrollPhaseChange { _, phase in
+            if phase == .interacting || phase == .tracking {
+                readerMenuOpen = false
+                readingTime.noteInteraction()
+            }
+        }
         .onChange(of: visibleParagraph) { _, value in
             guard turnMode == "scroll", let value else { return }
+            readingTime.noteInteraction()
             if value != readingPosition.paragraph {
                 readingPosition = ReaderTextPosition(paragraph: value, utf16Offset: 0)
             }
@@ -232,6 +266,10 @@ struct ReaderView: View {
                         .contentShape(Rectangle()).onTapGesture(perform: toggleChrome)
                 }
             }
+            .onChange(of: pagination != nil && paginationLayout == layout, initial: true) { _, visible in
+                pagedTextVisible = visible
+            }
+            .onDisappear { pagedTextVisible = false }
             .task(id: layout) {
                 let source = paragraphs
                 let worker = Task.detached(priority: .userInitiated) {
@@ -379,9 +417,15 @@ struct ReaderView: View {
         } label: { Image(systemName: cloudProgressFailed ? "exclamationmark.icloud" : "ellipsis").frame(width: 44, height: 44) }
             .accessibilityLabel(cloudProgressFailed ? "云端进度未同步，更多阅读选项" : "更多阅读选项")
             .accessibilityIdentifier("reader-more")
+            .simultaneousGesture(TapGesture().onEnded {
+                readerMenuOpen = true
+                readingTime.setActivity(nil)
+            })
     }
 
     private func toggleChrome() {
+        readerMenuOpen = false
+        readingTime.noteInteraction()
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { showChrome.toggle() }
     }
 
@@ -507,6 +551,7 @@ struct ReaderView: View {
         }
     }
     private func select(_ chapter: Chapter, at position: ReaderTextPosition? = nil) {
+        readerMenuOpen = false
         if chapter.id == selected.id, let position, content != nil {
             jump(to: position)
             showChrome = false

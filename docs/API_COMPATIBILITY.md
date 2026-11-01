@@ -62,7 +62,7 @@ VIP 图片解析参考上游 `src-tauri/ocr-worker/ocr_worker.py` 的多帧、38
 
 日常福利的请求依据参考项目 [client.ts](https://github.com/Mios-dream/SFNovel-ReaderProject/blob/3fa06a01db2a98585fa3abb77c4be9af0bcb856e/src/client/Sfacg/api/client.ts) 中 `getTasks`、`claimTask` 和 `taskBonus`，并与 APK `AccountApi` 注解及认证只读任务列表核对。`GET /user/tasks` 使用 `taskCategory=1`、`package`、当前安装标识 `deviceToken`、`page` 和 `size`；接受任务为 `POST /user/tasks/{taskID}`，领取已完成奖励为 `PUT` 同一路径。刷新列表不接受任务，也不领取奖励。
 
-真实只读结果确认，已接受但尚未完成的任务也可能保持 `status=0`，须结合 `recordId`：编号为零才是未接受，正编号为进行中。只有已知任务类型、完整进度字段、`status=1` 且服务器完成数达到要求时才提供领奖动作；`status=2` 为已领取，异常或缺失状态保持未知。签到继续使用独立签到入口。每次用户手动操作前重新获取状态，按服务器明确回执确认结果，不自动重试提交。本项目不伪造阅读时长、分享访问、广告观看、充值或订阅完成，也不调用这些任务完成上报接口。
+真实只读结果确认，已接受但尚未完成的任务也可能保持 `status=0`，须结合 `recordId`：编号为零才是未接受，正编号为进行中。只有已知任务类型、完整进度字段、`status=1` 且服务器完成数达到要求时才提供领奖动作；`status=2` 为已领取，异常或缺失状态保持未知。签到继续使用独立签到入口。每次用户手动操作前重新获取状态，按服务器明确回执确认结果，不自动重试提交。本项目不伪造阅读时长、分享访问、广告观看、充值或订阅完成；真实小说阅读时长由独立协议上报，其余条件不自动模拟。
 
 会员礼包由 APK `WelfareApi` 的真实方法/参数注解确认：列表为 `GET /Member/Prize`，可带 `packType` 查询参数；领取为 `POST /Member/Prize?type={type}&packType={packType}`，参数位于 URL 查询中，没有 JSON 或表单正文。本版支持普通菠萝包会员 `packType=0` 的四类已确认礼包。官方[会员权益说明](https://pages.sfacg.com/h5/app/common/guide/membership-program.html)及其公开脚本说明了日礼包与每七天礼包；实际名称、数量说明、间隔和剩余天数仍以服务器列表为准。
 
@@ -71,6 +71,18 @@ VIP 图片解析参考上游 `src-tauri/ocr-worker/ocr_worker.py` 的多帧、38
 APK 礼包模型 `aw.y.g(JSONObject)` 以 `optLong("residueDay")` 读取有符号剩余天数，`f()` 返回该值。`SFMemberGiftPackAdapter.b` 原始指令在 `0x8656d62` 调用 `f()`，`0x8656d72` 的 `if-lez` 跳入“立即领取”并启用按钮；正数 1 显示“明日再来”，其他正数显示剩余天数并禁用按钮。`interval` 独立保存，不参与这个资格判断。因此本项目在当前会员资格明确有效、已知礼包类型的前提下，以有效整数 `residueDay <= 0` 允许手动领取，不再把负数误判为未知，也不额外要求 `interval > 0`。缺失、布尔值和小数仍保持未知；有效正数 `interval` 仅作为周期元数据，未知周期不猜测本地领取确认记录的释放时间。
 
 `/Member/Prize/Summary` 的汇总字段不用于推断会员资格；未知礼包或无法解析的冷却值不启用领取。提交前重新检查身份、资格和冷却，使用并发互斥及会话代际校验，服务器明确成功后才显示领取成功，不臆测回执未提供的奖励数量。此次实现验证未提交真实会员礼包领取。
+
+## 小说阅读时长（1.6.0）
+
+APK `CommonApi.updateReadingTime` 的 Retrofit 注解确认 `PUT /user/readingtime`，请求为 JSON `@Body`。调用 `lw.aa.E0` 的原始指令（`0x869fb76`–`0x869fbec`）构造 `seconds`、`readingDate`、`entityType`、`entityId`、`chapterId` 五字段。小说分支 `lw.qf` 在 `0x86141ce`/`0x86141d6` 分别读取 `getNovelSeconds` 与 `getNovelSubmitSeconds` 后相减，`0x8614232` 的小说类型常量为 2。成功回调才把本次增量加入已提交秒数，证明 `seconds` 是增量秒数；并非累计日总量。该计时管理器的日期格式明确为 `yyyy-MM-dd`、`GMT+08`。
+
+客户端只在账号身份确认后、正编号小说的正文实际显示且应用 active 时启动单调时钟；加载、排版、错误、目录、设置、书签、购买弹层和后台均暂停。正文点触、滚动和翻页更新活动时间，连续 120 秒无活动截止计时，触摸恢复不会补算空档。APK 同样存在两分钟无活动停止路径。跨章尾段保留各章归属；跨北京时间午夜切成两日，秒数来自实际 elapsed，不按定时器回调次数累加。负编号导入/演示内容及自动朗读播放时不计时，避免语音自动换章反复重启空闲窗口。
+
+本应用每 5 秒检查一次，累计约 60 秒提交，离开正文时提交整数尾段。这是本机批量策略；APK 定期检查中的实际时间阈值为 300 秒（相关日志文字并不准确），接口本身没有以此限制请求最小秒数。请求绑定已验证账号、当前会话代次和真实书章编号；发出前再验证身份。协议没有幂等字段，因此每段取走后只尝试一次：超时、发出后取消、异常信封均不自动重放，不将旧账号剩余时间转给新账号。未确认或未发出的时长可能少记；计时不跨进程续算，也不承诺后台网络一定完成。
+
+上报成功仅触发福利列表重新读取，不把本机时长叠加到服务器任务进度，也不自动接任务或领奖。仅明确完成的服务端任务可手动领取奖励。使用 `systemUptime` 只计算本应用内事件的经过时间，隐私清单按 [Apple 的 35F9.1 用途](https://developer.apple.com/documentation/bundleresources/app-privacy-configuration/nsprivacyaccessedapitypes/nsprivacyaccessedapitype) 声明；请求不发送系统启动时间或原始单调时间戳。
+
+验证使用注入时钟、离线身份与本地请求接收器。端到端离线场景使用真实前台经过时间，确认阅读后服务器模拟进度由 59/60 到可领取，以及不确定回执仍保持不可领取；这些不是官方服务的真实入账或领奖验证。
 
 ## 云端阅读位置
 

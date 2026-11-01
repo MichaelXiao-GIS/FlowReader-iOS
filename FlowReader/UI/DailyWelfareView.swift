@@ -2,8 +2,11 @@ import SwiftUI
 
 struct DailyWelfareView: View {
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(ReadingTimeReporter.self) private var readingTime
     @State var state: WelfareViewState
     @State private var showLogin = false
+    @State private var isVisible = false
+    @State private var pendingReadingRefresh = false
 
     var body: some View {
         List {
@@ -19,10 +22,21 @@ struct DailyWelfareView: View {
                         .accessibilityIdentifier("welfare-connect")
                 }
             }
+            if state.tasks.contains(where: { $0.taskType == 4 }) {
+                Section {
+                    Text(readingTime.statusMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("welfare-reading-time-status")
+                } header: { Text("阅读计时") }
+                footer: {
+                    Text("登录后先手动领取阅读任务，在本应用阅读菠萝包小说会累计时长。离开正文、切到后台或锁屏时暂停，连续 2 分钟无操作也会暂停。自动朗读不计入。")
+                }
+            }
             if let message = state.errorMessage {
                 Section {
                     Text(message).font(.subheadline).foregroundStyle(.secondary)
-                    Button("刷新状态") { Task { await state.refresh(.daily) } }.disabled(state.busy)
+                    Button("刷新状态") { Task { await refresh() } }.disabled(state.busy)
                 }
             }
             Section {
@@ -40,6 +54,7 @@ struct DailyWelfareView: View {
                                 Text(task.taskType == 4 ? "阅读进度" : "已完成").foregroundStyle(.secondary)
                                 Spacer()
                                 Text(task.taskType == 4 ? "\(completed / 60) / \(max(1, required / 60 + (required % 60 == 0 ? 0 : 1))) 分钟" : "\(completed) / \(required)").monospacedDigit()
+                                    .accessibilityIdentifier("welfare-progress-\(task.id)")
                             }.font(.caption)
                             ProgressView(value: Double(min(completed, required)), total: Double(required))
                                 .accessibilityLabel(task.taskType == 4 ? "阅读进度，\(completed / 60) 分钟，共 \(max(1, required / 60 + (required % 60 == 0 ? 0 : 1))) 分钟" : "已完成 \(completed)，共 \(required)")
@@ -59,21 +74,49 @@ struct DailyWelfareView: View {
                 }
             } header: { Text("日常任务") }
             footer: {
-                Text("当前本应用的阅读时长暂不计入福利任务，进度以服务器返回为准。分享等条件请在菠萝包官方完成后返回刷新。每日签到请使用上一级的签到入口。")
+                Text("任务进度以菠萝包确认为准，奖励需手动领取。分享等条件请在菠萝包官方完成后返回刷新。每日签到请使用上一级入口。")
             }
         }
         .scrollContentBackground(.hidden).background(FlowTheme.paper)
         .navigationTitle("日常福利").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button("刷新", systemImage: "arrow.clockwise") { Task { await state.refresh(.daily) } }.disabled(state.busy)
+                Button("刷新", systemImage: "arrow.clockwise") { Task { await refresh() } }.disabled(state.busy)
+                    .accessibilityIdentifier("welfare-refresh")
             }
         }
-        .task { await state.refresh(.daily) }
-        .refreshable { await state.refresh(.daily) }
-        .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await state.refresh(.daily) } } }
-        .sheet(isPresented: $showLogin, onDismiss: { Task { await state.refresh(.daily) } }) { AccountServiceLoginView() }
-        .onDisappear { state.invalidateRead() }
+        .onAppear { isVisible = true }
+        .task { await refresh() }
+        .refreshable { await refresh() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, isVisible {
+                Task { await refresh(); refreshReadingConfirmationIfPossible() }
+            }
+        }
+        .onChange(of: readingTime.confirmationRevision) { _, _ in
+            guard isVisible else { return }
+            pendingReadingRefresh = true
+            refreshReadingConfirmationIfPossible()
+        }
+        .onChange(of: state.busy) { _, busy in if !busy { refreshReadingConfirmationIfPossible() } }
+        .sheet(isPresented: $showLogin, onDismiss: { Task { await refresh() } }) { AccountServiceLoginView() }
+        .onDisappear { isVisible = false; pendingReadingRefresh = false; state.invalidateRead() }
+    }
+
+    private func refresh() async {
+        await readingTime.refreshSessionStatus()
+        await state.refresh(.daily)
+    }
+
+    private func refreshReadingConfirmationIfPossible() {
+        guard pendingReadingRefresh, isVisible, scenePhase == .active, !state.busy else { return }
+        pendingReadingRefresh = false
+        Task {
+            guard isVisible, scenePhase == .active else { return }
+            // If another action started after scheduling, refresh once it finishes.
+            guard !state.busy else { pendingReadingRefresh = true; return }
+            await state.refresh(.daily)
+        }
     }
 }
 

@@ -118,7 +118,7 @@ extension SFAPI {
 }
 
 /// Protocol backed by the reference client's getTasks/claimTask/taskBonus and a live GET task list.
-/// No reading-time or share-completion submission is part of this protocol.
+/// Task actions remain separate from the measured reading-time reporting protocol.
 enum DailyWelfareProtocol {
     static let pageSize = 20
 

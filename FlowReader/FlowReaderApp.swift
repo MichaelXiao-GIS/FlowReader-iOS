@@ -6,6 +6,7 @@ struct FlowReaderApp: App {
     @State private var library: LibraryStore
     @State private var readingSession: ReadingSession
     @State private var lifecycle: AppLifecycleDiagnostics
+    @State private var readingTime: ReadingTimeReporter
     private let preferences: UserDefaults
 
     init() {
@@ -21,6 +22,11 @@ struct FlowReaderApp: App {
         _library = State(initialValue: LibraryStore(directory: directory))
         _readingSession = State(initialValue: ReadingSession(defaults: preferences))
         _lifecycle = State(initialValue: AppLifecycleDiagnostics(defaults: preferences))
+        #if DEBUG
+        _readingTime = State(initialValue: ReadingTimeFixture.isEnabled ? ReadingTimeFixture.shared.makeReporter() : ReadingTimeReporter())
+        #else
+        _readingTime = State(initialValue: ReadingTimeReporter())
+        #endif
     }
 
     var body: some Scene {
@@ -30,7 +36,9 @@ struct FlowReaderApp: App {
                 .environment(library)
                 .environment(readingSession)
                 .environment(lifecycle)
+                .environment(readingTime)
                 .onChange(of: scenePhase, initial: true) { _, phase in
+                    if phase != .active { readingTime.setActivity(nil) }
                     switch phase {
                     case .active: lifecycle.recordPhase(.active)
                     case .inactive: lifecycle.recordPhase(.inactive)

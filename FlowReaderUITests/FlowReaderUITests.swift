@@ -16,7 +16,120 @@ final class FlowReaderUITests: XCTestCase {
         if name.contains("testLongContentsLocateReverseAndKeepNaturalChapterNavigation") { app.launchArguments.append("--long-catalog-fixture") }
         if name.contains("testAccountAvatarLoadsAndClearsWhenAccountChanges") { app.launchArguments.append("--account-avatar-fixture") }
         if name.contains("testMemberGiftEligibilityAndClaimRefresh") { app.launchArguments.append("--member-gifts-fixture") }
+        if name.contains("testReadingTime") { app.launchArguments.append("--reading-time-fixture") }
+        if name.contains("testReadingTimeUnconfirmedReportKeepsDailyProgress") { app.launchArguments.append("--reading-time-failure-fixture") }
         app.launch()
+    }
+
+    func testReadingTimeConfirmationUpdatesDailyProgress() throws {
+        // The fixture keeps a local task service and the production reading clock.
+        // No task acceptance, reward claim or live account request is performed.
+        openReadingTimeWelfare()
+        assertReadingTimeTaskIncomplete()
+        capture("71-阅读任务59分钟尚未完成")
+
+        readOriginalTextThenReturnToWelfare()
+        let reward = app.buttons["welfare-task-5"]
+        let progress = app.staticTexts.matching(identifier: "welfare-progress-5").firstMatch
+        let confirmed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            guard reward.exists, reward.isEnabled, reward.label == "领取奖励", progress.exists,
+                  progress.label.hasSuffix(" / 60 分钟"),
+                  let minutes = Int(progress.label.components(separatedBy: " / ")[0]) else { return false }
+            return minutes >= 60
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [confirmed], timeout: 10), .completed,
+                       "实际阅读整数秒经确认后，任务列表才应显示完成并允许手动领奖")
+        capture("72-阅读时长确认后任务完成")
+        // Deliberately do not tap the reward button, even in this local fixture.
+        let refresh = app.buttons["welfare-refresh"]
+        XCTAssertTrue(refresh.exists && refresh.isEnabled)
+        refresh.tap()
+        let refreshed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            refresh.isEnabled && reward.exists && reward.isEnabled && reward.label == "领取奖励"
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [refreshed], timeout: 5), .completed)
+        XCTAssertFalse(app.buttons["已领取"].exists, "只计时与刷新不能自动领取奖励")
+    }
+
+    func testReadingTimeUnconfirmedReportKeepsDailyProgress() throws {
+        openReadingTimeWelfare()
+        assertReadingTimeTaskIncomplete()
+        readOriginalTextThenReturnToWelfare()
+        assertReadingTimeTaskIncomplete()
+
+        let status = app.staticTexts.matching(identifier: "welfare-reading-time-status").firstMatch
+        for _ in 0..<6 {
+            if status.exists && status.isHittable { break }
+            app.swipeDown()
+        }
+        let unconfirmed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            status.exists && status.label.contains("未能确认同步")
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [unconfirmed], timeout: 10), .completed,
+                       "未确认上报需明确提示，不能把本机经过的时间当成任务完成")
+        capture("73-时长未确认仍保留原进度")
+        let refresh = app.buttons["welfare-refresh"]
+        XCTAssertTrue(refresh.exists && refresh.isEnabled)
+        refresh.tap()
+        let refreshed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in refresh.exists && refresh.isEnabled }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [refreshed], timeout: 5), .completed)
+        assertReadingTimeTaskIncomplete()
+        XCTAssertFalse(app.buttons["领取奖励"].exists, "刷新不得重放未确认时长或直接开放领奖")
+    }
+
+    private func openReadingTimeWelfare() {
+        XCTAssertTrue(app.buttons["book--100"].waitForExistence(timeout: 15))
+        selectTab("我的")
+        let benefits = app.buttons["account-benefits"]
+        reveal(benefits)
+        benefits.tap()
+        let entry = app.buttons["benefits-daily-welfare"]
+        reveal(entry)
+        entry.tap()
+        let identity = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "离线阅读计时测试")).firstMatch
+        XCTAssertTrue(identity.waitForExistence(timeout: 10), "阅读任务应属于纯离线测试账号")
+        reveal(app.buttons["welfare-task-5"])
+    }
+
+    private func assertReadingTimeTaskIncomplete() {
+        let task = app.buttons["welfare-task-5"]
+        reveal(task)
+        let progress = app.staticTexts.matching(identifier: "welfare-progress-5").firstMatch
+        let incomplete = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            task.exists && !task.isEnabled && task.label == "进行中" && progress.exists && progress.label == "59 / 60 分钟"
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [incomplete], timeout: 5), .completed,
+                       "3599秒仍是59/60分钟，未获完成确认时不得领奖")
+    }
+
+    private func readOriginalTextThenReturnToWelfare() {
+        let entry = app.buttons["benefits-daily-welfare"]
+        navigateBack(until: entry, labels: ["会员与签到", "返回", "Back"])
+        let benefits = app.buttons["account-benefits"]
+        navigateBack(until: benefits, labels: ["我的", "返回", "Back"])
+        selectTab("发现")
+        let book = app.buttons["book--100"]
+        XCTAssertTrue(book.waitForExistence(timeout: 10))
+        book.tap()
+        let start = app.buttons["start-reading"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        start.tap()
+        let paragraph = app.staticTexts["reader-paragraph-0"]
+        XCTAssertTrue(paragraph.waitForExistence(timeout: 10))
+        XCTAssertTrue(paragraph.isHittable)
+        let visibleAt = ProcessInfo.processInfo.systemUptime
+        let actualReading = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            ProcessInfo.processInfo.systemUptime - visibleAt >= 3 && paragraph.exists && paragraph.isHittable
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [actualReading], timeout: 6), .completed,
+                       "正文需真实停留至少3秒，不以测试时钟伪造阅读时长")
+        toggleReaderTools()
+        let close = app.buttons["reader-close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 5))
+        close.tap()
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        navigateBack(until: book, labels: ["现在就读", "返回", "Back"])
+        openReadingTimeWelfare()
     }
 
     func testMemberGiftEligibilityAndClaimRefresh() throws {

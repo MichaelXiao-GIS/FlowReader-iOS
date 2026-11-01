@@ -24,7 +24,8 @@ struct AccountBenefitsView: View {
 
     init() {
         #if DEBUG
-        _welfare = State(initialValue: MemberGiftsFixture.isEnabled ? MemberGiftsFixture.makeState() : WelfareViewState())
+        _welfare = State(initialValue: ReadingTimeFixture.isEnabled ? ReadingTimeFixture.shared.makeWelfareState()
+            : MemberGiftsFixture.isEnabled ? MemberGiftsFixture.makeState() : WelfareViewState())
         #else
         _welfare = State(initialValue: WelfareViewState())
         #endif
