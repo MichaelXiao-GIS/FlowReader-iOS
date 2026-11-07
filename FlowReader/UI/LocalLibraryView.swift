@@ -22,7 +22,6 @@ struct LocalLibraryView: View {
     @State private var error: String?
     @State private var exportURL: URL?
     @State private var showingShare = false
-    @State private var showingLogin = false
     @State private var showingServiceLogin = false
     @State private var openingCloudBook: Int?
     @State private var deleting: LocalBook?
@@ -106,7 +105,6 @@ struct LocalLibraryView: View {
                 Button("移除藏书", role: .destructive) { if let deleting { library.remove(bookID: deleting.id) }; deleting = nil }
             }
             .sheet(isPresented: $showingShare) { if let exportURL { ActivitySheet(items: [exportURL]) } }
-            .sheet(isPresented: $showingLogin, onDismiss: { Task { await cloud.refresh(); scope = .cloud } }) { WebLoginView() }
             .sheet(isPresented: $showingServiceLogin, onDismiss: { Task { await cloud.refresh() } }) { AccountServiceLoginView() }
             .onChange(of: savedAudio.errorMessage) { _, message in if let message { error = message; savedAudio.errorMessage = nil } }
             .onChange(of: cloud.sessionGeneration) { _, _ in cloudCategory = ""; path = NavigationPath() }
@@ -161,7 +159,7 @@ struct LocalLibraryView: View {
             if cloud.appNeedsLogin {
                 Button("重新登录菠萝包") { showingServiceLogin = true }.buttonStyle(.glass)
             } else if !cloud.usesAppAccount && cloud.webNeedsLogin {
-                Button("重新授权网页阅读") { showingLogin = true }.buttonStyle(.glass)
+                Button("登录菠萝包") { showingServiceLogin = true }.buttonStyle(.glass)
             }
             if cloud.shelf.isConfirmedEmpty {
                 ContentUnavailableView("暂无可读取的文字小说", systemImage: "books.vertical", description: Text("在菠萝包收藏喜欢的文字作品后，下拉即可同步。"))
@@ -264,7 +262,7 @@ struct LocalLibraryView: View {
                 Button("重试") { Task { await cloud.refreshHistory() } }.buttonStyle(.glass).disabled(cloud.historyLoading)
             }
         } else if cloud.hasCheckedAccount && cloud.isConnected && !cloud.appConnected {
-            Button("连接账号服务以读取云端阅读位置", systemImage: "icloud") { showingServiceLogin = true }
+            Button("登录菠萝包以读取云端阅读位置", systemImage: "icloud") { showingServiceLogin = true }
                 .font(.subheadline).buttonStyle(.glass)
         }
     }

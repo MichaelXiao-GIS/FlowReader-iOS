@@ -4,7 +4,6 @@ struct AccountWalletSection: View {
     @Environment(CloudLibraryStore.self) private var cloud
     @Environment(\.scenePhase) private var scenePhase
     @State private var state = AccountWalletState.shared
-    let onLogin: () -> Void
 
     var body: some View {
         Section {
@@ -18,9 +17,7 @@ struct AccountWalletSection: View {
                 Text("余额暂未读取").foregroundStyle(.secondary)
             }
             if let error = state.error, !state.needsLogin { Text(error).font(.caption).foregroundStyle(.secondary) }
-            if state.needsLogin {
-                Button("登录菠萝包", action: onLogin)
-            } else {
+            if !state.needsLogin {
                 Button("刷新余额") { Task { await state.load() } }.disabled(state.loading)
                     .accessibilityIdentifier("wallet-refresh")
             }

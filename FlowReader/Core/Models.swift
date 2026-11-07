@@ -92,7 +92,7 @@ enum SFAPIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidResponse: return "菠萝包返回的数据暂时无法读取，请稍后重试。"
-        case .loginRequired: return "请先登录菠萝包官方账号。"
+        case .loginRequired: return "请在“我的”中登录菠萝包后重试。"
         case .subscriptionRequired: return "本章需要在菠萝包官方订阅后阅读。"
         case .emptyContent: return "本章暂时没有可读取的文字，请在官方页面查看。"
         case .noAudio: return "这部作品暂时没有可播放的有声专辑。"

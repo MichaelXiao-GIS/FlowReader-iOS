@@ -101,4 +101,16 @@ final class AppChapterContentTests: XCTestCase {
             XCTFail("The request must not transfer to another account")
         } catch { XCTAssertTrue(error is CancellationError) }
     }
+
+    func testSignedOutVIPReadingRequestsPrimaryLoginWithoutWebAuthorization() async {
+        let api = SFAPI(loadPersistedSessions: false)
+        do {
+            _ = try await api.content(chapter: chapter)
+            XCTFail("Signed-out VIP reading must require login before fetching content")
+        } catch {
+            guard case SFAPIError.loginRequired = error else {
+                return XCTFail("VIP reading must route to the primary login, not a website-only error: \(error)")
+            }
+        }
+    }
 }

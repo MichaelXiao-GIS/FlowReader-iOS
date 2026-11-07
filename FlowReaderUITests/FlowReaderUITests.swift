@@ -725,6 +725,49 @@ final class FlowReaderUITests: XCTestCase {
         surface.tap()
     }
 
+    func testDailyLoginUsesOneAccountAndKeepsWebCompatibilitySecondary() throws {
+        XCTAssertTrue(app.buttons["book--100"].waitForExistence(timeout: 15))
+        selectTab("我的")
+        let login = app.buttons["account-login"]
+        XCTAssertTrue(login.waitForExistence(timeout: 5))
+        XCTAssertEqual(login.label, "登录菠萝包")
+        let loginButtons = app.buttons.matching(NSPredicate(format: "label == %@", "登录菠萝包"))
+        XCTAssertEqual(loginButtons.count, 1, "我的首页只应保留一个日常登录按钮")
+        XCTAssertFalse(app.buttons["official-login"].exists, "日常账号页不应要求第二次网页授权")
+        login.tap()
+        XCTAssertTrue(app.navigationBars["登录菠萝包"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.secureTextFields.firstMatch.exists)
+        XCTAssertFalse(app.buttons["登录"].isEnabled)
+        app.navigationBars.buttons["取消"].tap()
+
+        let compatibility = app.buttons["account-compatibility"]
+        reveal(compatibility)
+        XCTAssertFalse(app.buttons["official-login"].exists, "滚动后的首页也不应出现网页授权")
+        capture("91-统一账号入口")
+        compatibility.tap()
+        XCTAssertTrue(app.navigationBars["兼容设置"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["official-login"].exists, "旧网页入口应仅保留在兼容设置中")
+        capture("92-网页兼容设置")
+        navigateBack(until: compatibility, labels: ["我的", "返回", "Back"])
+        XCTAssertFalse(app.buttons["official-login"].exists)
+
+        let benefits = app.buttons["account-benefits"]
+        for _ in 0..<6 {
+            if benefits.exists && benefits.isHittable { break }
+            app.swipeDown()
+        }
+        benefits.tap()
+        let benefitsLogin = app.buttons["benefits-connect"]
+        XCTAssertTrue(benefitsLogin.waitForExistence(timeout: 5))
+        XCTAssertEqual(benefitsLogin.label, "登录菠萝包")
+        XCTAssertFalse(app.buttons["官方网页登录"].exists)
+        XCTAssertFalse(app.buttons["重新连接网页账号"].exists)
+        benefitsLogin.tap()
+        XCTAssertTrue(app.navigationBars["登录菠萝包"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.secureTextFields.firstMatch.exists)
+        app.navigationBars.buttons["取消"].tap()
+    }
+
     func testNativeTabsAndAccountEntry() throws {
         XCTAssertTrue(app.buttons["book--100"].waitForExistence(timeout: 15))
         app.scrollViews.firstMatch.swipeDown()
@@ -748,7 +791,7 @@ final class FlowReaderUITests: XCTestCase {
         benefits.tap()
         let connect = app.buttons["benefits-connect"]
         XCTAssertTrue(connect.waitForExistence(timeout: 5))
-        let signInHint = app.staticTexts["连接账号服务后，可读取今日状态并签到。"]
+        let signInHint = app.staticTexts["登录菠萝包后，可读取今日状态并签到。"]
         reveal(signInHint)
         XCTAssertTrue(signInHint.exists, "未连接账号服务时不能假装已读取签到状态")
         XCTAssertFalse(app.buttons["sign-in-submit"].exists, "未连接时不应显示可提交的签到操作")
@@ -759,7 +802,7 @@ final class FlowReaderUITests: XCTestCase {
         }
         connect.tap()
         XCTAssertTrue(app.secureTextFields.firstMatch.waitForExistence(timeout: 5))
-        XCTAssertTrue(app.navigationBars["连接账号服务"].exists)
+        XCTAssertTrue(app.navigationBars["登录菠萝包"].exists)
         app.navigationBars.buttons["取消"].tap()
         navigateBack(until: benefits, labels: ["我的", "返回", "Back"])
 
@@ -805,8 +848,8 @@ final class FlowReaderUITests: XCTestCase {
             login.tap()
             let password = app.secureTextFields.firstMatch
             XCTAssertTrue(password.waitForExistence(timeout: 5))
-            XCTAssertTrue(app.navigationBars["连接账号服务"].exists)
-            let submit = app.buttons["连接"]
+            XCTAssertTrue(app.navigationBars["登录菠萝包"].exists)
+            let submit = app.buttons["登录"]
             XCTAssertTrue(submit.waitForExistence(timeout: 5))
             XCTAssertFalse(submit.isEnabled, "空白登录表单不能提交")
             app.navigationBars.buttons["取消"].tap()

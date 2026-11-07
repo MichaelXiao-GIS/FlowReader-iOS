@@ -1,6 +1,6 @@
 # 账号接口兼容记录
 
-核对日期：2026-11-01。此记录描述兼容实现的证据，不代表 SFACG 提供公开、稳定的开发者 API。
+核对日期：2026-11-07（本次补充登录与 WebView 会话核对；其他接口沿用 2026-11-01 记录）。此记录描述兼容实现的证据，不代表 SFACG 提供公开、稳定的开发者 API。
 
 ## 参考材料
 
@@ -10,6 +10,18 @@
 - APK、提取资源、反编译文件和真实账号响应均不进入仓库与发行包。客户端协议由本项目以 Swift 独立实现。
 
 ## 主要账号与 App 书架
+
+### 2026-11-07：统一日常登录与安卓证据
+
+对上述同一 APK 重新提取被包装 DEX 的映射表、方法及 Retrofit 注解，并核对附加区保留的原始指令。`AccountApi.login(Map<String,Object>)` 声明 `POST /sessions`，参数为请求 body；`getUser(String)` 声明 `GET /user?expand=…`；`NovelApi.getChaps(long,String,boolean)` 声明 `GET /Chaps/{id}`，参数为 `id`、`expand`、`autoOrder`。HTTP 动词通过 APK 内 Retrofit 注解解析器 `qf0.t$a.e(Annotation)` 的原始分支确认：`uf0.f` 对应 GET、`uf0.o` 对应 POST，非仅根据路径字符串推测。
+
+安卓 CookieJar 实现 `lu.a` 将响应 Cookie 写入 `SharedPrefsCookiePersistent`，请求时按有效期与 URL 匹配复用。其 `h()` 方法遍历已保存 Cookie，找到 `.SFCommunity` 后调用 `b(Cookie)`；后者设置 WebView CookieManager，将 Cookie 写入 `sfacg.com` 并同步。因此，所检查实现存在将已有登录会话共享给内嵌网页的机制，无需在该同步方法里再次输入密码。`h()` 与 Retrofit 解析方法的壳内主体已被替换；恢复关联依据为附加原始 code_item 与当前方法完全匹配的 16 字节头，以及字段、方法、字符串和分支指令一致性。未完整追踪每个网页生命周期的调用时机，不声称已完整反编译。
+
+本项目的 `content(chapter:)` 在已保存 App 登录时本来就优先请求 App 正文，且请求固定 `autoOrder=false`；无需先取得网页会话。此前“我的”与会员页并列展示网页授权，加上未登录 VIP 阅读提示“官方网页登录”，造成了需要第二次登录的误导。本次统一日常入口为“登录菠萝包”，移除账户余额区的重复登录按钮；旧网页功能收纳到“我的 → 兼容设置”。会员页存在 App 会话时不再查询旧网页身份，书库和未登录 VIP 阅读也统一引导主账号登录。
+
+本次不自动复制或转换 App / Web 凭据，不把 `session_APP` 改名成 `session_PC`。安卓同步 `.SFCommunity` 的代码证据不能证明目前所有网页接口接受仅该 Cookie；现有网页兼容验证还要求 `session_PC`。旧会话继续独立保留，App 登录失效不会切换到另一网页账号。真实账号登录、验证码、服务端 Cookie 返回与网页免登录互通均未在本次重新实测。
+
+本地分析证据位于被 Git 忽略的 `build/login-audit-20261107/`：`android-login-findings.txt`、`login-focused-annotations.json`、`login-cookie-bytecode.json`。这些文件来自用户 APK，未读取真实会话或发起网络登录；提取代码与 APK 不进入发行包。
 
 已连接 App 账号服务时，书架、云端续读、正文和福利使用该 App 账号。网页会话是独立的可选兼容入口；过期网页会话不会阻断有效 App 账号，也不会以另一个网页账号替代 App 书架。保存有 Cookie 只代表存在会话材料，只有当前身份查询成功才显示连接已确认。会话切换会清除旧账号的云端缓存和内存权限；暂时查询失败后仍保留上一次已验证身份用于后续比较，防止不同账号的部分书架合并。
 

@@ -12,11 +12,9 @@ struct AccountBenefitsView: View {
     @State private var loading = false
     @State private var signing = false
     @State private var needsAppLogin = false
-    @State private var needsWebLogin = false
     @State private var membershipError: String?
     @State private var identityError: String?
     @State private var showLogin = false
-    @State private var showWebLogin = false
     @State private var requestID = UUID()
     @State private var sessionGeneration: UUID?
     @State private var actionTask: Task<Void, Never>?
@@ -34,31 +32,22 @@ struct AccountBenefitsView: View {
     private var status: SignInStatus? { signState.status }
     private var receipt: SignInReceipt? { signState.receipt }
     private var hasSigned: Bool { signState.hasSigned }
-    private var differentAccounts: Bool {
-        guard let appAccount, let webAccount else { return false }
-        return !appAccount.matchesAccountIdentity(webAccount)
-    }
 
     var body: some View {
         List {
             Section {
-                if webConnected {
-                    LabeledContent("网页账号", value: webAccount?.name ?? (loading ? "正在读取" : "身份暂不可读"))
-                }
                 if appConnected {
-                    LabeledContent("账号服务", value: appAccount?.name ?? (loading ? "正在读取" : "身份暂不可读"))
+                    LabeledContent("菠萝包账号", value: appAccount?.name ?? (loading ? "正在读取" : "身份暂不可读"))
+                } else if webConnected {
+                    LabeledContent("旧版网页账号", value: webAccount?.name ?? (loading ? "正在读取" : "身份暂不可读"))
                 }
                 if let identityError { Text(identityError).font(.subheadline).foregroundStyle(.secondary) }
-                Button(needsAppLogin ? "重新连接账号服务" : appConnected ? "更换账号服务连接" : "连接账号服务") { showLogin = true }
+                Button(needsAppLogin ? "重新登录菠萝包" : appConnected ? "切换账号" : "登录菠萝包") { showLogin = true }
                     .disabled(signing)
                     .accessibilityIdentifier("benefits-connect")
-                if needsWebLogin || (!webConnected && !appConnected) {
-                    Button(needsWebLogin ? "重新连接网页账号" : "官方网页登录") { showWebLogin = true }
-                        .disabled(signing)
-                }
             } header: { Text("当前账号") }
             footer: {
-                Text(differentAccounts ? "网页与账号服务连接了不同账号。会员信息与签到均标明实际使用的账号。" : "网页登录与账号服务分别保存。签到需要连接账号服务。")
+                Text("阅读、会员福利与签到使用同一菠萝包账号，无需额外网页授权。")
             }
 
             Section {
@@ -73,14 +62,14 @@ struct AccountBenefitsView: View {
                         Text("会员详情请在菠萝包官方查看").foregroundStyle(.secondary)
                     }
                 } else if !loading && membershipError == nil {
-                    Text("连接账号后查看会员信息").foregroundStyle(.secondary)
+                    Text("登录后查看会员信息").foregroundStyle(.secondary)
                 }
                 if let membershipError { errorMessage(membershipError) }
             } header: { Text("会员信息") }
             footer: {
                 VStack(alignment: .leading, spacing: 5) {
                     if let membership {
-                        Text("来自\(membership.source == .app ? "账号服务" : "网页账号")：\(membership.source == .app ? appAccount?.name ?? "身份暂不可读" : webAccount?.name ?? "身份暂不可读")")
+                        Text("来自\(membership.source == .app ? "菠萝包账号" : "旧版网页账号")：\(membership.source == .app ? appAccount?.name ?? "身份暂不可读" : webAccount?.name ?? "身份暂不可读")")
                     }
                     Text("VIP 等级与会员状态不代表已购买某一作品的付费章节。")
                 }
@@ -124,7 +113,7 @@ struct AccountBenefitsView: View {
                     .disabled(signing || loading || hasSigned || appAccount == nil || needsAppLogin)
                     .accessibilityIdentifier("sign-in-submit")
                 } else {
-                    Text("连接账号服务后，可读取今日状态并签到。").foregroundStyle(.secondary)
+                    Text("登录菠萝包后，可读取今日状态并签到。").foregroundStyle(.secondary)
                 }
             } header: { Text("每日签到") }
             footer: {
@@ -146,7 +135,6 @@ struct AccountBenefitsView: View {
         .refreshable { await load() }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await load() } } }
         .sheet(isPresented: $showLogin, onDismiss: { Task { await load() } }) { AccountServiceLoginView() }
-        .sheet(isPresented: $showWebLogin, onDismiss: { Task { await load() } }) { WebLoginView() }
         .onDisappear { requestID = UUID(); actionTask?.cancel(); signing = false }
     }
 
@@ -166,17 +154,17 @@ struct AccountBenefitsView: View {
         guard requestID == request else { return }
         sessionGeneration = generation
         signState.prepare(generation: generation, serviceDay: SignInProtocol.serviceDay(at: Date()))
-        // Read identities afresh so switching either independent session cannot reuse another account's benefits.
+        // Verify the identity used for benefits; an unused Web session cannot affect the App account.
         membership = nil
         appAccount = nil; webAccount = nil
-        membershipError = nil; identityError = nil; needsAppLogin = false; needsWebLogin = false
+        membershipError = nil; identityError = nil; needsAppLogin = false
         let appSession = await SFAPI.shared.hasSavedAppLogin()
         let webSession = await SFAPI.shared.hasSavedWebLogin()
         guard requestID == request else { return }
         appConnected = appSession
-        webConnected = webSession
+        webConnected = !appSession && webSession
         guard appSession || webSession else { loading = false; return }
-        async let identities: Void = loadIdentities(request, appSession: appSession, webSession: webSession)
+        async let identities: Void = loadIdentities(request, appSession: appSession, webSession: !appSession && webSession)
         async let benefits: Void = loadMembership(request)
         async let signStatus: Void = loadSignStatus(request, connected: appSession)
         _ = await (identities, benefits, signStatus)
@@ -191,7 +179,6 @@ struct AccountBenefitsView: View {
             } catch {
                 if await isCurrent(request), !AccountShelfState.isCancellation(error) {
                     identityError = error.localizedDescription
-                    if isLoginError(error) { needsWebLogin = true }
                 }
             }
         }
@@ -219,7 +206,6 @@ struct AccountBenefitsView: View {
             guard await isCurrent(request), !AccountShelfState.isCancellation(error) else { return }
             membershipError = error.localizedDescription
             if appConnected && isLoginError(error) { needsAppLogin = true }
-            if !appConnected && webConnected && isLoginError(error) { needsWebLogin = true }
         }
     }
 

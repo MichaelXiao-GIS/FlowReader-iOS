@@ -2,10 +2,9 @@ import SwiftUI
 import WebKit
 
 struct AccountView: View {
-    private enum Destination: Hashable { case benefits }
+    private enum Destination: Hashable { case benefits, compatibility }
     @Environment(CloudLibraryStore.self) private var cloud
     @AppStorage("appearance") private var appearance = "system"
-    @State private var showLogin = false
     @State private var showLogout = false
     @State private var showAbout = false
     @State private var showAppLogin = false
@@ -46,7 +45,7 @@ struct AccountView: View {
                         .accessibilityIdentifier("account-login")
                 }
             } footer: {
-                Text("登录后同步书架、云端续读、会员福利与有声。收藏与阅读进度位于“书库”。")
+                Text("登录一次，即可同步书架、阅读已购章节、云端续读，并使用会员福利与有声。")
             }
             #if DEBUG
             if AccountAvatarFixture.isEnabled {
@@ -67,33 +66,12 @@ struct AccountView: View {
                         .disabled(cloud.accountLoading)
                 }
             }
-            AccountWalletSection { showAppLogin = true }
+            AccountWalletSection()
             Section("会员与签到") {
                 NavigationLink(value: Destination.benefits) {
                     Label("会员信息与每日签到", systemImage: "checkmark.seal")
                 }
                 .accessibilityIdentifier("account-benefits")
-            }
-            Section {
-                if cloud.webConnected {
-                    Label(cloud.webAccount.map { "已授权 · \($0.name)" } ?? "网页阅读已授权", systemImage: "checkmark.circle")
-                        .foregroundStyle(FlowTheme.accent)
-                    Button("更换网页授权") { showLogin = true }
-                } else {
-                    Button(cloud.webNeedsLogin ? "重新授权网页阅读" : "授权网页阅读") { showLogin = true }
-                        .accessibilityIdentifier("official-login")
-                }
-                if let message = cloud.webConnectionError {
-                    Text(message).font(.caption).foregroundStyle(.secondary)
-                }
-                if let primary = cloud.account, let web = cloud.webAccount,
-                   cloud.usesAppAccount, !primary.matchesAccountIdentity(web) {
-                    Text("网页授权与当前账号不同，请更换为同一账号后读取已购章节。")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            } header: { Text("网页阅读授权 · 可选") }
-            footer: {
-                Text("账号登录已支持授权正文；网页授权仅供旧版阅读方式兼容使用，失效不会阻止书架与福利同步。")
             }
             Section("偏好设置") {
                 Picker("外观", selection: $appearance) {
@@ -101,6 +79,8 @@ struct AccountView: View {
                     Text("浅色").tag("light")
                     Text("深色").tag("dark")
                 }
+                NavigationLink("兼容设置", value: Destination.compatibility)
+                    .accessibilityIdentifier("account-compatibility")
                 Button("关于菠萝阅") { showAbout = true }.foregroundStyle(.primary)
             }
             if cloud.hasSavedConnection {
@@ -112,11 +92,15 @@ struct AccountView: View {
         .scrollContentBackground(.hidden)
         .background(FlowTheme.paper)
         .navigationTitle("我的")
-        .navigationDestination(for: Destination.self) { _ in AccountBenefitsView() }
+        .navigationDestination(for: Destination.self) { destination in
+            switch destination {
+            case .benefits: AccountBenefitsView()
+            case .compatibility: AccountCompatibilityView()
+            }
+        }
         .accessibilityIdentifier("account-content")
         .refreshable { await cloud.refreshAccount(); await AccountWalletState.shared.load() }
         .task { await cloud.refreshAccount() }
-        .sheet(isPresented: $showLogin, onDismiss: { Task { await cloud.refreshAccount() } }) { WebLoginView() }
         .sheet(isPresented: $showAbout) { AboutView() }
         .sheet(isPresented: $showAppLogin, onDismiss: { Task { await cloud.refreshAccount() } }) { AccountServiceLoginView() }
         .confirmationDialog("退出后将清除本机登录信息，下载的作品会保留。", isPresented: $showLogout, titleVisibility: .visible) {
@@ -128,6 +112,48 @@ struct AccountView: View {
                 }
             }
         }
+    }
+}
+
+private struct AccountCompatibilityView: View {
+    @Environment(CloudLibraryStore.self) private var cloud
+    @State private var showWebLogin = false
+
+    var body: some View {
+        List {
+            Section {
+                Text("日常阅读只需登录菠萝包，无需再进行网页授权。")
+                Text("此处仅保留旧版网页阅读方式的兼容入口。已有授权会继续保存，主账号登录后，书架与正文使用主账号。")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+            Section {
+                if cloud.webConnected {
+                    Label(cloud.webAccount.map { "已授权 · \($0.name)" } ?? "网页阅读已授权", systemImage: "checkmark.circle")
+                        .foregroundStyle(FlowTheme.accent)
+                    Button("更换网页授权") { showWebLogin = true }
+                } else {
+                    Button(cloud.webNeedsLogin ? "重新授权网页阅读" : "授权网页阅读") { showWebLogin = true }
+                        .accessibilityIdentifier("official-login")
+                }
+                if let message = cloud.webConnectionError {
+                    Text(message).font(.caption).foregroundStyle(.secondary)
+                }
+                if let primary = cloud.account, let web = cloud.webAccount,
+                   cloud.usesAppAccount, !primary.matchesAccountIdentity(web) {
+                    Text("此网页授权属于另一账号。主账号登录期间不会使用这份网页授权。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } header: { Text("旧版网页阅读") }
+            footer: {
+                Text("网页授权失效不会影响已登录主账号的阅读、书架或福利。")
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(FlowTheme.paper)
+        .navigationTitle("兼容设置")
+        .navigationBarTitleDisplayMode(.inline)
+        .task { await cloud.refreshAccount() }
+        .sheet(isPresented: $showWebLogin, onDismiss: { Task { await cloud.refreshAccount() } }) { WebLoginView() }
     }
 }
 
@@ -148,7 +174,7 @@ struct AccountServiceLoginView: View {
                         .autocorrectionDisabled()
                     SecureField("密码", text: $password).textContentType(.password)
                 } footer: {
-                    Text("登录后同步书架、云端续读、会员福利与有声作品。密码只用于本次登录，不会保存；如需额外验证，请在官方客户端完成。")
+                    Text("同一账号用于书架、已购阅读、云端续读、会员福利与有声，无需额外网页授权。密码只用于本次登录，不会保存；如需额外验证，请在官方客户端完成。")
                 }
                 if let error {
                     Section { Text(error).font(.subheadline).foregroundStyle(.red) }
@@ -157,12 +183,12 @@ struct AccountServiceLoginView: View {
                     Button {
                         Task { await connect() }
                     } label: {
-                        HStack { Text("连接"); Spacer(); if connecting { ProgressView() } }
+                        HStack { Text("登录"); Spacer(); if connecting { ProgressView() } }
                     }
                     .disabled(connecting || username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || password.isEmpty)
                 }
             }
-            .navigationTitle("连接账号服务")
+            .navigationTitle("登录菠萝包")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() }.disabled(connecting) } }
         }

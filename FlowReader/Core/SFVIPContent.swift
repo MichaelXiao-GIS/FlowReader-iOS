@@ -7,7 +7,7 @@ import Vision
 extension SFAPI {
     /// Fetches only the image the official server authorizes for this Web session.
     func vipContent(chapter: Chapter) async throws -> ChapterContent {
-        guard hasWebSession() else { throw SFAPIError.server("请先使用官方网页登录，再读取已订阅章节。") }
+        guard hasWebSession() else { throw SFAPIError.loginRequired }
         let generation = sessionGeneration()
         if hasAppSession() {
             let appAccount = try await accountServiceProfile()
