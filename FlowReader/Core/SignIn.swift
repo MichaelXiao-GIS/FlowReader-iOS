@@ -20,9 +20,12 @@ struct SignInReceipt: Equatable, Sendable {
 extension SFAPI {
     func signInStatus() async throws -> SignInStatus {
         guard hasAppSession() else { throw SFAPIError.loginRequired }
-        let plan = SignInProtocol.statusRequest
-        let payload = try await signInPayload(plan, generation: sessionGeneration())
-        return try SignInProtocol.status(from: payload)
+        let generation = sessionGeneration()
+        let status = try await SignInProtocol.loadStatus { plan in
+            try await self.signInPayload(plan, generation: generation)
+        }
+        guard sessionGeneration() == generation else { throw CancellationError() }
+        return status
     }
 
     /// Called only by the user's explicit sign-in button, never on app launch or refresh.
@@ -56,6 +59,33 @@ enum SignInProtocol {
         let body: [String: String]?
     }
     static let statusRequest = Request(path: "/user/signInfo", method: "GET", body: nil)
+    static let streakRequest = Request(path: "/user/sign/continueDay", method: "GET", body: nil)
+
+    static func loadStatus(fetch: @Sendable (Request) async throws -> Any) async throws -> SignInStatus {
+        async let calendar = signedToday(from: fetch(statusRequest))
+        async let total = streak(from: fetch(streakRequest))
+
+        let signed: Bool?
+        do { signed = try await calendar }
+        catch {
+            try propagateSessionOrCancellation(error)
+            signed = nil
+        }
+        let days: Int?
+        do { days = try await total }
+        catch {
+            try propagateSessionOrCancellation(error)
+            guard signed != nil else { throw error }
+            days = nil
+        }
+        try Task.checkCancellation()
+        return SignInStatus(signedToday: signed, consecutiveDays: days)
+    }
+
+    private static func propagateSessionOrCancellation(_ error: Error) throws {
+        try Task.checkCancellation()
+        if SFAPI.isAuthenticationFailure(error) || AccountShelfState.isCancellation(error) { throw error }
+    }
 
     /// The reference date helper explicitly formats the UTC+8 service day.
     static func submission(at date: Date) -> Request {
@@ -71,15 +101,20 @@ enum SignInProtocol {
         return formatter.string(from: date)
     }
 
-    static func status(from payload: Any) throws -> SignInStatus {
+    static func signedToday(from payload: Any) throws -> Bool? {
         // The authenticated legacy endpoint returns a calendar collection (including []).
         // It does not establish today's status for the newer sign-in action.
-        if payload is [Any] { return SignInStatus(signedToday: nil, consecutiveDays: nil) }
+        if payload is [Any] { return nil }
         guard let object = payload as? [String: Any] else { throw SFAPIError.invalidResponse }
         // Do not treat missing or unrecognised fields as a successful "not signed" response.
-        let signed = ["isSigned", "signedToday", "hasSigned", "isSignIn"].compactMap { boolean(object[$0]) }.first
-        let days = ["continueDays", "consecutiveDays", "continuousDays"].compactMap { integer(object[$0]) }.first
-        return SignInStatus(signedToday: signed, consecutiveDays: days)
+        return ["isSigned", "signedToday", "hasSigned", "isSignIn"].compactMap { boolean(object[$0]) }.first
+    }
+
+    static func streak(from payload: Any) throws -> Int {
+        guard let object = payload as? [String: Any], let days = integer(object["totalContinueDays"]) else {
+            throw SFAPIError.invalidResponse
+        }
+        return days
     }
 
     static func receipt(from payload: Any) -> SignInReceipt {

@@ -2,6 +2,16 @@ import XCTest
 @testable import FlowReader
 
 final class SignInTests: XCTestCase {
+    func testContinuousDayRequestUsesAndroidReadOnlyEndpoint() async throws {
+        let api = SFAPI(loadPersistedSessions: false)
+        let plan = SignInProtocol.streakRequest
+        let request = try await api.appRequest(path: plan.path, query: [:], body: plan.body,
+                                               includeSession: true, method: plan.method)
+        XCTAssertEqual(request.url?.absoluteString, "https://api.sfacg.com/user/sign/continueDay")
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertNil(request.httpBody)
+    }
+
     func testStatusIsReadOnlyAndSubmissionUsesServiceDayInUTCPlusEight() throws {
         XCTAssertEqual(SignInProtocol.statusRequest.path, "/user/signInfo")
         XCTAssertEqual(SignInProtocol.statusRequest.method, "GET")
@@ -44,25 +54,116 @@ final class SignInTests: XCTestCase {
         }
     }
 
-    func testUnknownStatusDoesNotBecomeNotSignedOrZeroDays() throws {
-        let unknown = try SignInProtocol.status(from: ["unrecognized": true])
-        XCTAssertNil(unknown.signedToday)
-        XCTAssertNil(unknown.consecutiveDays)
-        let invalid = try SignInProtocol.status(from: ["isSigned": 1, "continueDays": false])
-        XCTAssertNil(invalid.signedToday)
-        XCTAssertNil(invalid.consecutiveDays)
-        XCTAssertThrowsError(try SignInProtocol.status(from: "login page"))
-        let known = try SignInProtocol.status(from: ["isSigned": true, "continueDays": 3])
-        XCTAssertEqual(known.signedToday, true)
-        XCTAssertEqual(known.consecutiveDays, 3)
+    func testTodayStatusRequiresAnExplicitBoolean() throws {
+        XCTAssertNil(try SignInProtocol.signedToday(from: ["unrecognized": true]))
+        XCTAssertNil(try SignInProtocol.signedToday(from: ["isSigned": 1]))
+        XCTAssertThrowsError(try SignInProtocol.signedToday(from: "login page"))
+        XCTAssertEqual(try SignInProtocol.signedToday(from: ["isSigned": true]), true)
+        XCTAssertEqual(try SignInProtocol.signedToday(from: ["isSigned": false]), false)
     }
 
     func testLegacyCalendarCollectionIsValidButDoesNotProveTodayStatus() throws {
         let calendars: [[Any]] = [[], [["date": "2026-10-30"]]]
         for payload in calendars {
-            let status = try SignInProtocol.status(from: payload)
-            XCTAssertNil(status.signedToday)
-            XCTAssertNil(status.consecutiveDays)
+            XCTAssertNil(try SignInProtocol.signedToday(from: payload))
+        }
+    }
+
+    func testStreakReadsTotalContinueDaysIncludingZeroAndValuesBeyondTheCurrentWeek() throws {
+        for total in [0, 42] {
+            let payload = [
+                "totalContinueDays": total, "seventDayContinueDays": 7,
+                "currentMonthContinueDays": 12, "activityContinueDays": 4,
+                "currentWeekTotalDays": 2, "nearlyContinueDays": 3
+            ]
+            XCTAssertEqual(try SignInProtocol.streak(from: payload), total)
+        }
+    }
+
+    func testStreakRejectsMissingOrMalformedTotalsWithoutFallingBackToOtherCounts() {
+        let invalid: [Any] = [
+            [], NSNull(), 7, ["currentWeekTotalDays": 3],
+            ["totalContinueDays": NSNull()], ["totalContinueDays": true],
+            ["totalContinueDays": -1], ["totalContinueDays": 2.5],
+            ["totalContinueDays": "unknown", "currentMonthContinueDays": 12]
+        ]
+        for payload in invalid {
+            XCTAssertThrowsError(try SignInProtocol.streak(from: payload), String(describing: payload))
+        }
+    }
+
+    func testStatusCombinesExplicitTodayFlagWithTotalFromTheStreakEndpoint() async throws {
+        let status = try await loadStatus(today: { ["isSigned": false, "continueDays": 2] },
+                                          streak: { ["totalContinueDays": 42] })
+        XCTAssertEqual(status, SignInStatus(signedToday: false, consecutiveDays: 42))
+    }
+
+    func testUnknownOrUnavailableTodayStatusDoesNotHideAValidStreak() async throws {
+        for total in [0, 42] {
+            let expected = SignInStatus(signedToday: nil, consecutiveDays: total)
+            let emptyCalendar = try await loadStatus(today: { [] }, streak: { ["totalContinueDays": total] })
+            XCTAssertEqual(emptyCalendar, expected)
+            let unavailable = try await loadStatus(today: { throw URLError(.timedOut) },
+                                                   streak: { ["totalContinueDays": total] })
+            XCTAssertEqual(unavailable, expected)
+        }
+    }
+
+    func testUnavailableStreakPreservesKnownTodayWithoutBorrowingLegacyCounts() async throws {
+        for signed in [false, true] {
+            let today: @Sendable () -> Any = { ["isSigned": signed, "continueDays": 2] }
+            let missing = try await loadStatus(today: today, streak: { ["currentWeekTotalDays": 2] })
+            let unavailable = try await loadStatus(today: today, streak: { throw URLError(.timedOut) })
+            let expected = SignInStatus(signedToday: signed, consecutiveDays: nil)
+            XCTAssertEqual(missing, expected)
+            XCTAssertEqual(unavailable, expected)
+        }
+    }
+
+    func testStreakErrorIsReportedWhenNeitherReadProvidesUsableData() async {
+        do {
+            _ = try await loadStatus(today: { [] }, streak: { throw URLError(.timedOut) })
+            XCTFail("An empty calendar cannot mask the unavailable streak")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .timedOut)
+        }
+    }
+
+    func testAuthenticationFailureOrCancellationFromEitherReadPreventsPartialResults() async {
+        for failToday in [false, true] {
+            for failure: Error in [SFAPIError.authenticationRequired("expired"), CancellationError()] {
+                do {
+                    _ = try await loadStatus(today: {
+                        if failToday { throw failure }
+                        return ["isSigned": true]
+                    }, streak: {
+                        if !failToday { throw failure }
+                        return ["totalContinueDays": 3]
+                    })
+                    XCTFail("Cannot display partial results for an expired or changed account")
+                } catch {
+                    if failure is CancellationError {
+                        XCTAssertTrue(error is CancellationError)
+                    } else if case SFAPIError.authenticationRequired(let message) = error {
+                        XCTAssertEqual(message, "expired")
+                    } else {
+                        XCTFail("Unexpected error: \(error)")
+                    }
+                }
+            }
+        }
+    }
+
+    private func loadStatus(today: @escaping @Sendable () throws -> Any,
+                            streak: @escaping @Sendable () throws -> Any) async throws -> SignInStatus {
+        try await SignInProtocol.loadStatus { request in
+            switch request.path {
+            case "/user/signInfo": return try today()
+            case "/user/sign/continueDay": return try streak()
+            default:
+                XCTFail("Unexpected sign-in request: \(request.path)")
+                throw SFAPIError.invalidResponse
+            }
         }
     }
 

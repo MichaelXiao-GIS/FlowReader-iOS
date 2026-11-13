@@ -66,7 +66,9 @@ VIP 图片解析参考上游 `src-tauri/ocr-worker/ocr_worker.py` 的多帧、38
 
 日期格式为北京时间 `YYYY-MM-DD`，依据历史版本中的 [getNowFormatDate](https://github.com/Mios-dream/SFNovel-ReaderProject/blob/b508d2dae5df877f4f919b213b1881216e9da47a/src/client/utils/tools.ts)。不能使用设备所在时区替代。
 
-无会话只读探测发现 `GET /user/newSignInfo` 返回 404，因此没有把提交地址直接当作查询地址。APK 中另有 `/user/signInfo`；它与 `/user/member/status` 的无会话 GET 请求均返回 401 和需要登录的提示。真实已签到账号的 `/user/signInfo` 返回成功信封及空数组；这不是损坏数据，也不证明当天尚未签到。日历数组未提供可靠状态时保留未知，不显示为“未签到”。明确的签到回执优先于可选详情查询，连续天数读取失败不会再覆盖已确认结果。已确认状态按经过哈希的 App 账号标识和北京时间日期缓存，换号与跨日不复用。签到只由用户按钮触发。
+安卓 5.2.84 的 `AccountApi.signContinueDay()` 和 `WelfareApi.getUserContinueDays()` 都使用已登录的 App 会话调用 `GET /user/sign/continueDay`，不带查询参数和正文。签到弹窗显示响应中 `data.totalContinueDays` 的总连续天数。安卓福利页在签到回执成功后会再次读取此接口。iOS 在打开、刷新页面和收到签到回执时读取同一字段。服务器返回 0 就显示“0 天”，缺少有效总数时显示“暂未获取”。
+
+今日签到状态仍通过 `GET /user/signInfo` 和明确的签到回执确认。历史已签到账号查询日历曾返回成功信封及空数组，此时今日状态保持未知，连续天数由独立接口提供。已确认的签到回执在详情查询失败时仍然有效。确认记录绑定经哈希的 App 账号标识和北京时间日期。签到只由用户按钮触发。
 
 网页和 App 登录各自保有独立会话。会员与签到页面展示实际使用的账号昵称；不会把网页 Cookie 转换为 App 会话。普通菠萝包会员是否开通已经由 `expand.member.isOpen` 确认，会员有效期不依据含义不明的状态编号推算。
 

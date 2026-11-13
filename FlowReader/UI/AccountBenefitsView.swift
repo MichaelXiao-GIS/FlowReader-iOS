@@ -92,7 +92,8 @@ struct AccountBenefitsView: View {
                             .foregroundStyle(hasSigned ? FlowTheme.accent : Color.primary)
                             .accessibilityIdentifier("sign-in-status")
                     }
-                    if let days = status?.consecutiveDays { LabeledContent("连续签到", value: "\(days) 天") }
+                    LabeledContent("连续签到", value: signState.consecutiveDaysText(isLoading: loading || signing))
+                        .accessibilityIdentifier("sign-in-streak")
                     if let receipt, !receipt.rewards.isEmpty {
                         ForEach(receipt.rewards) { reward in LabeledContent(reward.name, value: "\(reward.quantity)") }
                     }
